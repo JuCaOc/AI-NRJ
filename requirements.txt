@@ -1,0 +1,22 @@
+# AI Energy & Utilities Control Room
+# Python 3.11+
+
+# Core
+streamlit>=1.32.0
+pandas>=2.1.0
+numpy>=1.26.0
+plotly>=5.19.0
+
+# AI / LLM
+anthropic>=0.25.0
+
+# Report generation
+fpdf2>=2.7.9
+
+# Utilities
+python-dotenv>=1.0.0
+pytz>=2024.1
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0

@@ -57,12 +57,13 @@ def render() -> None:
     render_section_title("Choisir une action à simuler", "🎯")
     col_sel, col_info = st.columns([2, 1])
     with col_sel:
+        _action_keys = list(_ACTIONS.keys())
         action_label = st.selectbox(
             "Action recommandée",
-            list(_ACTIONS.keys()),
+            _action_keys,
             help="Sélectionnez une recommandation IA pour visualiser son impact simulé.",
         )
-        system, priority = _ACTIONS[action_label]
+        system, priority = _ACTIONS.get(action_label, _ACTIONS[_action_keys[0]])
         badge = render_status_badge(
             "alert" if priority == "HIGH" else "warning" if priority == "MEDIUM" else "normal",
             f"Priorité {priority}",

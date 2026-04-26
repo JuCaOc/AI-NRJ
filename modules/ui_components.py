@@ -3,10 +3,13 @@ Composants UI réutilisables — AI Energy & Utilities Control Room.
 Style industriel, dark theme, prêt pour démonstration.
 """
 
+from __future__ import annotations
+
 import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from typing import Any
 
 # ─────────────────────────────────────────────────────────────
 # Palette & configuration globale
@@ -381,3 +384,500 @@ def placeholder_gauge(
         margin=dict(l=20, r=20, t=30, b=10),
     )
     return fig
+
+
+# ─────────────────────────────────────────────────────────────
+# Helpers utilitaires
+# ─────────────────────────────────────────────────────────────
+
+SEVERITY_CSS: dict[str, str] = {
+    "critical": "critical",
+    "high":     "alert",
+    "medium":   "warning",
+    "low":      "ok",
+}
+
+SEVERITY_COLORS: dict[str, str] = {
+    "critical": "#D50000",
+    "high":     "#FF6D00",
+    "medium":   "#FFB300",
+    "low":      "#00C853",
+}
+
+DOMAIN_ICONS: dict[str, str] = {
+    "electricity": "⚡",
+    "air":         "💨",
+    "water":       "♻️",
+}
+
+
+def fmt_xpf(v: float) -> str:
+    if abs(v) >= 1_000_000:
+        return f"{v / 1_000_000:.1f}M"
+    if abs(v) >= 1_000:
+        return f"{v / 1_000:.0f}k"
+    return f"{v:.0f}"
+
+
+def score_to_status(score: float) -> str:
+    if score < 20:
+        return "ok"
+    if score < 45:
+        return "warning"
+    if score < 75:
+        return "alert"
+    return "critical"
+
+
+def plant_status_css(label: str) -> str:
+    return {"NORMAL": "ok", "VIGILANCE": "warning", "ALERTE": "alert", "CRITIQUE": "critical"}.get(label, "normal")
+
+
+def severity_badge(severity: str) -> str:
+    css = SEVERITY_CSS.get(severity, "normal")
+    return render_status_badge(css, severity.upper())
+
+
+# ─────────────────────────────────────────────────────────────
+# Graphiques depuis DataFrame réel
+# ─────────────────────────────────────────────────────────────
+
+def _anomaly_relevant_for(domain: str | bool | None) -> bool:
+    """
+    Vrai si la zone d'anomalie doit être dessinée pour ce graphique.
+      - None / False  → jamais
+      - True          → toujours (rétro-compatible)
+      - str (domaine) → seulement si une anomalie de ce domaine est active.
+    """
+    if not domain:
+        return False
+    if domain is True:
+        return True
+    anomalies = st.session_state.get("anomalies", []) or []
+    return any(a.get("domain") == domain for a in anomalies)
+
+
+def make_timeseries(
+    df: Any,
+    series: list[dict],
+    title: str = "",
+    y_label: str = "",
+    height: int = 280,
+    shade_anomaly: bool | str = False,
+    thresholds: list[dict] | None = None,
+) -> go.Figure:
+    """
+    Crée un graphique Plotly depuis un DataFrame réel.
+
+    series : list of dicts with keys:
+        col   – nom de la colonne DataFrame
+        name  – label légende (opt)
+        color – couleur hex (opt, auto-assignée sinon)
+        dash  – "solid"|"dash"|"dot" (opt, défaut solid)
+    shade_anomaly :
+        False / None : jamais ombré
+        True         : ombré si anomaly_flag présent (rétro-compat)
+        "electricity"|"air"|"water" : ombré uniquement si l'anomalie active
+        appartient à ce domaine.
+    thresholds : list of {"value": float, "name": str, "color": str (opt)}
+    """
+    fig = go.Figure()
+    for i, s in enumerate(series):
+        col = s["col"]
+        if col not in df.columns:
+            continue
+        color = s.get("color", CHART_COLORS[i % len(CHART_COLORS)])
+        dash  = s.get("dash", "solid")
+        name  = s.get("name", col)
+        fig.add_trace(go.Scatter(
+            x=df["timestamp"],
+            y=df[col],
+            mode="lines",
+            name=name,
+            line=dict(color=color, width=1.6, dash=dash),
+            hovertemplate=f"<b>{name}</b>: %{{y:.2f}}<br>%{{x|%H:%M}}<extra></extra>",
+        ))
+
+    if _anomaly_relevant_for(shade_anomaly) and "anomaly_flag" in df.columns:
+        rows = df[df["anomaly_flag"].astype(bool)]
+        if not rows.empty:
+            fig.add_vrect(
+                x0=str(rows["timestamp"].iloc[0]),
+                x1=str(rows["timestamp"].iloc[-1]),
+                fillcolor="rgba(255,109,0,0.09)",
+                layer="below",
+                line_width=0,
+                annotation_text="Anomalie détectée",
+                annotation_position="top left",
+                annotation_font=dict(color="#FF6D00", size=9),
+            )
+
+    for thr in (thresholds or []):
+        fig.add_hline(
+            y=thr["value"],
+            line_dash="dash",
+            line_color=thr.get("color", "#FFB300"),
+            line_width=1,
+            annotation_text=thr.get("name", f"{thr['value']}"),
+            annotation_position="top right",
+            annotation_font=dict(color=thr.get("color", "#FFB300"), size=9),
+        )
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=12, color="#8892A4")),
+        height=height,
+        yaxis_title=y_label,
+        showlegend=len(series) > 1,
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10), orientation="h", y=1.06, x=0),
+        **_PLOTLY_LAYOUT,
+    )
+    return fig
+
+
+def make_comparison_chart(
+    df_nom: Any,
+    df_cur: Any,
+    col: str,
+    title: str = "",
+    y_label: str = "",
+    height: int = 300,
+    anomaly_domain: str | None = None,
+) -> go.Figure:
+    """
+    Superpose la courbe nominale et la courbe courante pour comparaison.
+    Si anomaly_domain est précisé (electricity|air|water), la zone d'anomalie
+    n'est dessinée que si une anomalie de ce domaine est active.
+    Sinon, fallback sur le comportement historique (toute anomaly_flag présente).
+    """
+    fig = go.Figure()
+    if col in df_nom.columns:
+        fig.add_trace(go.Scatter(
+            x=df_nom["timestamp"], y=df_nom[col],
+            mode="lines", name="Nominal",
+            line=dict(color="#6B7894", width=1.4, dash="dot"),
+        ))
+    if col in df_cur.columns:
+        # Présence d'anomalie pertinente : domaine ciblé si fourni, sinon legacy
+        if anomaly_domain is not None:
+            relevant = _anomaly_relevant_for(anomaly_domain)
+        else:
+            relevant = "anomaly_flag" in df_cur.columns and bool(df_cur["anomaly_flag"].any())
+        color = "#FF6D00" if relevant else "#00B0FF"
+        fig.add_trace(go.Scatter(
+            x=df_cur["timestamp"], y=df_cur[col],
+            mode="lines", name="Scénario actif",
+            line=dict(color=color, width=2.0),
+        ))
+        if relevant and "anomaly_flag" in df_cur.columns:
+            rows = df_cur[df_cur["anomaly_flag"].astype(bool)]
+            if not rows.empty:
+                fig.add_vrect(
+                    x0=str(rows["timestamp"].iloc[0]),
+                    x1=str(rows["timestamp"].iloc[-1]),
+                    fillcolor="rgba(255,109,0,0.09)",
+                    layer="below", line_width=0,
+                    annotation_text="Fenêtre anomalie",
+                    annotation_position="top left",
+                    annotation_font=dict(color="#FF6D00", size=9),
+                )
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=12, color="#8892A4")),
+        height=height,
+        yaxis_title=y_label,
+        showlegend=True,
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10), orientation="h", y=1.06, x=0),
+        **_PLOTLY_LAYOUT,
+    )
+    return fig
+
+
+def make_domain_score_bar(scoring_summary: dict, height: int = 240) -> go.Figure:
+    """Graphique à barres des scores par domaine."""
+    domain_scores = scoring_summary.get("domain_scores", {})
+    labels = {
+        "electricity_score": "Electricité",
+        "air_score":         "Air comprimé",
+        "water_score":       "Eau",
+    }
+    names  = [labels.get(k, k) for k in ["electricity_score", "air_score", "water_score"]]
+    values = [domain_scores.get(k, 0.0) for k in ["electricity_score", "air_score", "water_score"]]
+    colors = [SEVERITY_COLORS.get(score_to_status(v).replace("ok","low").replace("warning","medium").replace("alert","high").replace("critical","critical"), "#00C853")
+              if v >= 75 else ("#FF6D00" if v >= 45 else ("#FFB300" if v >= 20 else "#00C853"))
+              for v in values]
+
+    fig = go.Figure(go.Bar(
+        x=names, y=values,
+        marker_color=colors,
+        text=[f"{v:.0f}" for v in values],
+        textposition="outside",
+        textfont=dict(color="#DDE3F0", size=12),
+    ))
+    fig.add_hline(y=75, line_dash="dash", line_color="#D50000", line_width=1,
+                  annotation_text="Critique", annotation_font=dict(color="#D50000", size=9))
+    fig.add_hline(y=45, line_dash="dash", line_color="#FF6D00", line_width=1,
+                  annotation_text="Alerte", annotation_font=dict(color="#FF6D00", size=9))
+    fig.update_layout(
+        title=dict(text="Score de criticité par domaine", font=dict(size=12, color="#8892A4")),
+        height=height,
+        yaxis=dict(range=[0, 110], tickfont=dict(color="#6B7894"), gridcolor="#1C2030"),
+        xaxis=dict(tickfont=dict(color="#DDE3F0")),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#0D1017",
+        margin=dict(l=20, r=20, t=40, b=20),
+        showlegend=False,
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────
+# Sidebar avec sélecteur de scénario
+# ─────────────────────────────────────────────────────────────
+
+_SCENARIO_FR: dict[str, str] = {
+    "nominal":                   "Fonctionnement nominal",
+    "pic_four_2":                "Pic four 2 (+28 %)",
+    "perte_partielle_cat":       "Perte CAT partielle (~60 %)",
+    "surcharge_15kv":            "Surcharge poste 15 kV",
+    "fuite_air_7b":              "Fuite réseau air 7 bars",
+    "defaut_c715":               "Défaut compresseur C715",
+    "desequilibre_c7":           "Déséquilibre C713 / C714",
+    "saturation_vsd_3b":         "Saturation VSD air 3 bars",
+    "mauvaise_regulation_3b":    "Mauvaise régulation 3 bars",
+    "defaut_refroidissement":    "Défaut refroidissement",
+    "risque_legionelle":         "Risque légionelle",
+    "baisse_bassin_b1":          "Baisse niveau bassin B1",
+    "forte_dependance_eau_brute":"Forte dépendance eau brute",
+    "multi_crise":               "Multi-crise (électricité + air + eau)",
+}
+
+
+def render_scenario_sidebar() -> None:
+    """Sidebar complète avec sélecteur de scénario, score global et légende."""
+    from modules.state_manager import ensure_state, _recompute
+    from modules.scenarios import list_available_scenarios
+
+    ensure_state()
+    ss = st.session_state
+
+    with st.sidebar:
+        st.markdown(
+            '<div style="font-size:17px;font-weight:700;color:#DDE3F0;margin-bottom:2px;">'
+            '⚡ AI Energy Control Room</div>'
+            '<div style="font-size:10px;color:#6B7894;letter-spacing:1.2px;'
+            'text-transform:uppercase;margin-bottom:12px;">Démo industrielle</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("---")
+
+        # ── Sélecteur de scénario ─────────────────────────────────────────
+        scenario_list = [{"name": "nominal"}] + list_available_scenarios()
+        names  = [s["name"] for s in scenario_list]
+        labels = {n: _SCENARIO_FR.get(n, n) for n in names}
+
+        current = ss.get("selected_scenario", "nominal")
+        idx = names.index(current) if current in names else 0
+
+        new_scenario = st.selectbox(
+            "Scénario industriel",
+            options=names,
+            index=idx,
+            format_func=lambda x: labels.get(x, x),
+            help="Sélectionner une défaillance pour déclencher l'analyse IA",
+            key="_sidebar_scenario_select",
+        )
+
+        if new_scenario != current:
+            ss["selected_scenario"] = new_scenario
+            _recompute()
+            st.rerun()
+
+        # Mode pill
+        is_nominal = (new_scenario == "nominal")
+        mode_color = "#00C853" if is_nominal else "#FF6D00"
+        mode_text  = "Nominal" if is_nominal else "Démo IA — anomalie active"
+        st.markdown(
+            f'<div style="font-size:11px;color:{mode_color};font-weight:600;'
+            f'margin:6px 0 10px 0;">● {mode_text}</div>',
+            unsafe_allow_html=True,
+        )
+
+        if not is_nominal:
+            desc = labels.get(new_scenario, "")
+            st.markdown(
+                f'<div style="background:rgba(255,109,0,.07);border:1px solid '
+                f'rgba(255,109,0,.25);border-radius:5px;padding:8px 10px;'
+                f'font-size:11px;color:#FF9950;margin-bottom:10px;">'
+                f'⚠️ {desc}</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Score global ──────────────────────────────────────────────────
+        scoring  = ss.get("scoring_summary", {})
+        g_score  = scoring.get("global_score", 0.0)
+        g_status = scoring.get("status", "NORMAL")
+        s_css    = plant_status_css(g_status)
+        s_color  = STATUS_COLORS.get(s_css, "#00C853")
+
+        st.markdown("---")
+        st.markdown(
+            f'<div style="text-align:center;padding:8px 0;">'
+            f'<div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;'
+            f'color:#6B7894;margin-bottom:4px;">Score criticité usine</div>'
+            f'<div style="font-size:36px;font-weight:700;color:{s_color};'
+            f'font-family:Courier New,monospace;">{g_score:.0f}</div>'
+            f'<div style="font-size:12px;font-weight:600;color:{s_color};">{g_status}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Légende ───────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown(
+            '<span style="font-size:10px;letter-spacing:1.5px;text-transform:uppercase;'
+            'color:#6B7894;">Légende statuts</span>',
+            unsafe_allow_html=True,
+        )
+        for sk, lbl in [("ok", "NORMAL"), ("warning", "VIGILANCE"),
+                         ("alert", "ALERTE"), ("critical", "CRITIQUE")]:
+            st.markdown(
+                f'<div class="legend-row">{render_status_badge(sk, lbl)}</div>',
+                unsafe_allow_html=True,
+            )
+
+        # ── Sécurité ─────────────────────────────────────────────────────
+        st.markdown("")
+        st.markdown(
+            '<div style="background:rgba(213,0,0,.07);border:1px solid rgba(213,0,0,.2);'
+            'border-radius:4px;padding:7px 10px;font-size:10px;color:#FF6B6B;'
+            'line-height:1.5;margin-top:6px;">'
+            '⚠️ Simulation uniquement<br>Aucune commande industrielle réelle.</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(f"v0.2.0 · {datetime.now().strftime('%H:%M:%S')}")
+
+
+# ─────────────────────────────────────────────────────────────
+# Bloc pédagogique SCADA vs IA
+# ─────────────────────────────────────────────────────────────
+
+def render_scada_vs_ia(
+    scada_points: list[str],
+    ia_points: list[str],
+    key_phrase: str = "Le SCADA montre ce qui se passe. L'IA explique pourquoi et quoi faire.",
+) -> None:
+    """Affiche le bloc comparatif SCADA classique vs IA."""
+    scada_html = "".join(f'<li style="margin:3px 0;color:#8892A4;">{p}</li>' for p in scada_points)
+    ia_html    = "".join(f'<li style="margin:3px 0;color:#8892A4;">{p}</li>' for p in ia_points)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(
+            f'<div style="background:#161A23;border:1px solid #2A2F3E;border-radius:6px;'
+            f'padding:14px 16px;height:100%;">'
+            f'<div style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;'
+            f'color:#6B7894;margin-bottom:8px;">SCADA classique</div>'
+            f'<ul style="margin:0;padding-left:16px;font-size:12px;">{scada_html}</ul>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f'<div style="background:#0F1C2E;border:1px solid #1E3A5F;border-radius:6px;'
+            f'padding:14px 16px;height:100%;">'
+            f'<div style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;'
+            f'color:#00B0FF;margin-bottom:8px;">IA (ce module)</div>'
+            f'<ul style="margin:0;padding-left:16px;font-size:12px;">{ia_html}</ul>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    if key_phrase:
+        st.markdown(
+            f'<div style="background:rgba(0,176,255,.06);border:1px solid rgba(0,176,255,.2);'
+            f'border-radius:6px;padding:12px 18px;margin-top:12px;text-align:center;'
+            f'font-size:13px;font-style:italic;color:#00B0FF;">'
+            f'"{key_phrase}"</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ─────────────────────────────────────────────────────────────
+# Bloc IA : anomalies + recommandations + coût
+# ─────────────────────────────────────────────────────────────
+
+def render_ia_block(
+    anomalies: list[dict],
+    recommendations: list,
+    business_summary: dict,
+    domain_filter: str | None = None,
+) -> None:
+    """Affiche les anomalies, recommandations et coût pour un domaine donné."""
+    filtered_anom = [a for a in anomalies if domain_filter is None or a.get("domain") == domain_filter]
+    filtered_recs = [r for r in recommendations if domain_filter is None or any(
+        a.get("id") == r.linked_anomaly_id for a in filtered_anom
+    )]
+
+    render_section_title("Analyse IA", "🤖")
+
+    if not filtered_anom:
+        st.success("Aucune anomalie détectée sur ce domaine. Fonctionnement nominal.")
+        return
+
+    # Anomalies
+    st.markdown(
+        f'<div style="font-size:11px;color:#6B7894;margin-bottom:8px;">'
+        f'{len(filtered_anom)} anomalie(s) détectée(s)</div>',
+        unsafe_allow_html=True,
+    )
+    for a in filtered_anom:
+        sev_color = SEVERITY_COLORS.get(a.get("severity", "low"), "#00C853")
+        st.markdown(
+            f'<div style="background:#161A23;border-left:3px solid {sev_color};'
+            f'border-radius:0 4px 4px 0;padding:10px 14px;margin-bottom:8px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<span style="font-size:13px;font-weight:600;color:#DDE3F0;">{a.get("title","")}</span>'
+            f'{severity_badge(a.get("severity","low"))}'
+            f'</div>'
+            f'<div style="font-size:11px;color:#6B7894;margin-top:4px;">'
+            f'{a.get("description","")[:120]}…'
+            f'</div>'
+            f'<div style="font-size:10px;color:#4A5268;margin-top:4px;">'
+            f'Confiance : {a.get("confidence_score",0):.0%} | '
+            f'{a.get("timestamp_start","")[:16]} → {a.get("timestamp_end","")[:16]}'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # Recommandations
+    if filtered_recs:
+        render_section_title("Recommandations", "📋")
+        for r in filtered_recs[:3]:
+            prio_color = {"urgent": "#D50000", "high": "#FF6D00", "medium": "#FFB300", "low": "#00C853"}.get(r.priority, "#6B7894")
+            st.markdown(
+                f'<div style="background:#161A23;border:1px solid #2A2F3E;border-radius:5px;'
+                f'padding:10px 14px;margin-bottom:6px;">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+                f'<span style="font-size:12px;font-weight:600;color:#DDE3F0;">{r.action_title}</span>'
+                f'<span style="font-size:10px;font-weight:700;color:{prio_color};">{r.priority.upper()}</span>'
+                f'</div>'
+                f'<div style="font-size:11px;color:#6B7894;margin-top:3px;">{r.action_detail[:100]}…</div>'
+                f'<div style="font-size:10px;color:#00C853;margin-top:4px;">'
+                f'Économie estimée : {fmt_xpf(r.estimated_saving_xpf)} XPF</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    # Coût estimé
+    from modules.business_value import evaluate_anomaly_cost as _eval_cost
+    total_loss = sum(_eval_cost(a)["estimated_loss_xpf"] for a in filtered_anom)
+    if total_loss > 0:
+        st.markdown(
+            f'<div style="background:rgba(213,0,0,.07);border:1px solid rgba(213,0,0,.2);'
+            f'border-radius:5px;padding:10px 16px;margin-top:6px;">'
+            f'<span style="font-size:12px;color:#FF6B6B;">Perte estimée (domaine) : '
+            f'<strong>{fmt_xpf(total_loss)} XPF</strong></span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )

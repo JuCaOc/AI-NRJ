@@ -22,26 +22,32 @@ START_DATE: str = "2024-01-15 00:00:00"
 # Nominaux physiques — modifiez ici pour calibrer sur une vraie usine
 # ─────────────────────────────────────────────────────────────────────────────
 
-_FURNACE_NOM_MW: tuple = (11.0, 9.5, 8.5)     # puissance nominale fours 1-2-3
-_CAT_NOM_MW: float = 18.0                       # génération centrale CAT
+_FURNACE_NOM_MW: tuple = (55.0, 55.0, 55.0)    # puissance nominale fours 1-2-3 (3×55 MW nameplate, max ~160 MW)
+_PV_NOM_MW: float = 35.0                        # apport réseau / photovoltaïque au pic (MW)
+_CAT_MIN_MW: float = 30.0                       # minimum technique CAT (MW)
+_CAT_MAX_MW: float = 180.0                      # maximum CAT (MW) — plage réelle 80-120 MW nominal
 
 _C7_NAMES: list = ["C713", "C714", "C715", "C716", "C717"]
 _C7_RUN_THRESH: dict = {                         # production_index min pour démarrage
     "C713": 0.00, "C714": 0.00,
     "C715": 0.63, "C716": 0.90, "C717": 0.72,
 }
-_C7_NOM_FLOW: int = 1_380                        # Nm³/h à pleine charge
-_C7_NOM_POWER: int = 142                         # kW à pleine charge
+_C7_NOM_FLOW: int = 3_500                        # Nm³/h à pleine charge
+_C7_NOM_POWER: int = 350                         # kW à pleine charge
 
 _C3_VAR_MAX_FLOW: int = 880                      # Nm³/h à 100 % VSD
 _C3_VAR_MAX_POWER: int = 92                      # kW à 100 % VSD
 
-_RW_NOM_FLOW: int = 820                          # m³/h nominal eau recyclée
-_RW_SUPPLY_TEMP: float = 24.0                    # °C départ nominal
-_RW_DELTA_T_NOM: float = 6.5                     # °C (retour − départ) nominal
+_RW_NOM_FLOW: int = 2_500                        # m³/h nominal eau recyclée
+_RW_NOM_PRESSURE: float = 3.5                    # bar nominal circuit côté pompes EF
+_RW_SUPPLY_TEMP: float = 24.0                    # °C départ (eau froide vers clients)
+_RW_DELTA_T_NOM: float = 5.0                     # °C (retour chaud 29°C − départ froid 24°C)
+_RW_MAKEUP_NOM: float = 100.0                    # m³/h appoint eau brute nominal
 
 _B0_CAPACITY_M3: int = 1_200                     # volume total bassin B0
 _B1_CAPACITY_M3: int = 800                       # volume total bassin B1
+
+ELECTRICITY_TARIFF_XPF_KWH: float = 22.0        # XPF/kWh — tarif électricité Franc Pacifique
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,13 +112,8 @@ def generate_electricity_data(df: pd.DataFrame, seed: int = SEED) -> pd.DataFram
     # ── Fours (charges 63 kV directes) ───────────────────────────────────
     for i, nom in enumerate(_FURNACE_NOM_MW, 1):
         col = f"furnace_{i}_63kv_mw"
-        noise = rng.normal(0.0, 0.08, n)
-        df[col] = np.clip(nom * prod + noise, 0.0, nom * 1.05).round(3)
-
-    # ── CAT (génération interne quasi-constante) ──────────────────────────
-    df["cat_generation_63kv_mw"] = np.clip(
-        _CAT_NOM_MW + rng.normal(0.0, 0.15, n), 15.0, 21.0
-    ).round(3)
+        noise = rng.normal(0.0, 0.50, n)
+        df[col] = np.clip(nom * prod + noise, nom * 0.45, nom).round(3)
 
     # ── Sous-stations 15 kV ───────────────────────────────────────────────
     # Substation A : gros moteurs 5,5 kV + compresseurs air
@@ -139,7 +140,7 @@ def generate_electricity_data(df: pd.DataFrame, seed: int = SEED) -> pd.DataFram
 
     # ── Charges 5,5 kV ───────────────────────────────────────────────────
     df["compressors_7b_5_5kv_mw"] = np.clip(
-        0.38 + 0.13 * prod + rng.normal(0.0, 0.012, n), 0.25, 0.60
+        0.60 + 1.00 * prod + rng.normal(0.0, 0.030, n), 0.50, 1.80
     ).round(4)
 
     df["salt_water_pumps_5_5kv_mw"] = np.clip(
@@ -169,19 +170,27 @@ def generate_electricity_data(df: pd.DataFrame, seed: int = SEED) -> pd.DataFram
     )
     df["total_63kv_bus_mw"] = (furnace_sum + df["station_15kv_supply_mw"]).round(3)
 
-    df["total_plant_power_mw"] = (
-        furnace_sum
-        + df["compressors_7b_5_5kv_mw"]
-        + df["salt_water_pumps_5_5kv_mw"]
-        + df["mpc_pumps_5_5kv_mw"]
-        + df["motors_5_5kv_mw"]
-        + df["auxiliaries_400v_mw"]
-        + df["other_motors_400v_mw"]
-    ).round(3)
+    df["total_plant_power_mw"] = df["total_63kv_bus_mw"]
 
-    df["grid_import_63kv_mw"] = np.clip(
-        df["total_63kv_bus_mw"] - df["cat_generation_63kv_mw"], 5.0, 60.0
-    ).round(3)
+    # ── CAT (dispatch PV : CAT = demande − PV, borné [30, 180]) ──────────
+    hours = (
+        pd.to_datetime(df["timestamp"]).dt.hour
+        + pd.to_datetime(df["timestamp"]).dt.minute / 60.0
+    ).values
+    pv_raw = np.where(
+        (hours >= 7.0) & (hours <= 18.0),
+        _PV_NOM_MW * np.sin(np.pi * (hours - 7.0) / 11.0),
+        0.0,
+    )
+    pv = np.clip(pv_raw + rng.normal(0.0, 2.0, n), 0.0, _PV_NOM_MW * 1.05).round(1)
+    cat = np.clip(df["total_63kv_bus_mw"].values - pv, _CAT_MIN_MW, _CAT_MAX_MW).round(1)
+    df["cat_generation_63kv_mw"] = cat
+
+    df["grid_import_63kv_mw"] = (df["total_63kv_bus_mw"].values - cat).round(1)
+
+    df["energy_cost_xpf"] = (
+        df["total_plant_power_mw"] * 1_000.0 * (INTERVAL_MIN / 60.0) * ELECTRICITY_TARIFF_XPF_KWH
+    ).round(0)
 
     return df
 
@@ -224,20 +233,23 @@ def generate_air_data(df: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
 
         flow = np.where(
             running,
-            np.clip(_C7_NOM_FLOW * load + rng.normal(0.0, 14.0, n), 0.0, _C7_NOM_FLOW * 1.01),
+            np.clip(_C7_NOM_FLOW * load + rng.normal(0.0, 35.0, n), 0.0, _C7_NOM_FLOW * 1.01),
             0.0,
         )
         # Puissance légèrement sous-linéaire par rapport au débit
         power = np.where(
             running,
-            np.clip(_C7_NOM_POWER * load ** 0.88 + rng.normal(0.0, 1.8, n), 0.0, _C7_NOM_POWER * 1.02),
+            np.clip(_C7_NOM_POWER * load ** 0.88 + rng.normal(0.0, 4.5, n), 0.0, _C7_NOM_POWER * 1.02),
             0.0,
         )
 
-        df[f"{name}_flow_nm3h"] = flow.round(0)
-        df[f"{name}_power_kw"] = power.round(1)
-        total_7b_flow += flow
-        total_7b_power += power
+        flow_r = flow.round(0)
+        power_r = power.round(1)
+        df[f"{name}_flow_nm3h"] = flow_r
+        df[f"{name}_status"] = (flow_r > 0).astype(int)
+        df[f"{name}_power_kw"] = power_r
+        total_7b_flow += flow_r
+        total_7b_power += power_r
 
     df["air_7b_total_flow_nm3h"] = total_7b_flow.round(0)
     df["air_7b_total_power_kw"] = total_7b_power.round(1)
@@ -283,14 +295,15 @@ def generate_air_data(df: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
     for name, spd in [("C321", c321_spd), ("C322", c322_spd), ("C323", c323_spd)]:
         df[f"{name}_speed_pct"] = (spd * 100.0).round(1)
         flow_v = np.clip(_C3_VAR_MAX_FLOW * spd + rng.normal(0.0, 7.0, n), 0.0, _C3_VAR_MAX_FLOW * 1.01)
-        # Puissance VSD : pertes fixes + part variable
         power_v = np.clip(
             _C3_VAR_MAX_POWER * (0.12 + 0.88 * spd) + rng.normal(0.0, 1.0, n),
             0.0, _C3_VAR_MAX_POWER * 1.02,
         )
+        flow_v_r = flow_v.round(0)
+        df[f"{name}_flow_nm3h"] = flow_v_r
         df[f"{name}_power_kw"] = power_v.round(1)
-        total_3b_flow += flow_v
-        total_3b_power += power_v
+        total_3b_flow += flow_v_r
+        total_3b_power += power_v.round(1)
 
     # Fixes : à l'arrêt en nominal
     for name in ("C311", "C312"):
@@ -349,8 +362,8 @@ def generate_water_data(df: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
 
     # ── Eau recyclée — débit & températures ──────────────────────────────
     df["recycled_water_flow_m3h"] = np.clip(
-        _RW_NOM_FLOW * (0.76 + 0.30 * total_cool) + rng.normal(0.0, 7.0, n),
-        600, 980,
+        _RW_NOM_FLOW * (0.76 + 0.30 * total_cool) + rng.normal(0.0, 20.0, n),
+        1_800, 2_700,
     ).round(0)
 
     df["recycled_water_supply_temp_c"] = np.clip(
@@ -358,23 +371,51 @@ def generate_water_data(df: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
     ).round(2)
 
     delta_t = np.clip(
-        _RW_DELTA_T_NOM * (0.68 + 0.46 * total_cool) + rng.normal(0.0, 0.18, n),
-        3.5, 9.5,
+        _RW_DELTA_T_NOM * (0.68 + 0.46 * total_cool) + rng.normal(0.0, 0.15, n),
+        3.0, 7.5,
     )
     df["recycled_water_delta_t_c"] = delta_t.round(2)
     df["recycled_water_return_temp_c"] = (
         df["recycled_water_supply_temp_c"].values + delta_t
     ).round(2)
 
+    nom_cooling = float(_RW_NOM_FLOW * _RW_DELTA_T_NOM)
+    actual_cooling = df["recycled_water_flow_m3h"].values * delta_t
+    df["recycled_water_efficiency_index"] = np.clip(
+        actual_cooling / nom_cooling, 0.50, 1.30
+    ).round(3)
+
     # ── Eau recyclée — équipements ────────────────────────────────────────
     flow_ratio = df["recycled_water_flow_m3h"].values / _RW_NOM_FLOW
 
-    df["recycled_water_pump_power_kw"] = np.clip(
-        50.0 + 22.0 * flow_ratio + rng.normal(0.0, 1.0, n), 38.0, 78.0
-    ).round(1)
+    # Pression refoulement pompes eau froide (côté clients)
+    rw_pressure = _RW_NOM_PRESSURE - 0.20 * (flow_ratio - 1.0) + rng.normal(0.0, 0.04, n)
+    df["recycled_water_pressure_bar"] = np.clip(rw_pressure, 3.0, 4.0).round(2)
 
-    df["cooling_tower_power_kw"] = np.clip(
-        16.0 + 14.0 * total_cool + rng.normal(0.0, 0.7, n), 10.0, 34.0
+    # 3 pompes "eau froide" (EF) — refoulement vers clients, ~833 m³/h chacune à 3,5 bar
+    cold_total = np.zeros(n)
+    for idx in range(1, 4):
+        pf = np.clip(95.0 + 20.0 * flow_ratio + rng.normal(0.0, 3.0, n), 70.0, 130.0).round(1)
+        df[f"cold_water_pump_{idx}_power_kw"] = pf
+        cold_total += pf
+
+    # 2 pompes "eau chaude" (EC) — aspiration bassin → filtres sable → aéros
+    hot_total = np.zeros(n)
+    for idx in range(1, 3):
+        # Puissance plus élevée : vainc pertes de charge filtres + aéros (~4 bar total)
+        pc = np.clip(155.0 + 30.0 * flow_ratio + rng.normal(0.0, 4.0, n), 115.0, 210.0).round(1)
+        df[f"hot_water_pump_{idx}_power_kw"] = pc
+        hot_total += pc
+
+    df["recycled_water_pump_power_kw"] = (cold_total + hot_total).round(1)
+
+    # Filtre à sable : DP proportionnel au débit (colmatage particules)
+    sand_dp = 0.30 + 0.28 * flow_ratio + rng.normal(0.0, 0.025, n)
+    df["sand_filter_dp_bar"] = np.clip(sand_dp, 0.20, 0.70).round(3)
+
+    # Aéroréfrigérants — puissance ventilateurs
+    df["aero_power_kw"] = np.clip(
+        50.0 + 50.0 * total_cool + rng.normal(0.0, 2.0, n), 30.0, 110.0
     ).round(1)
 
     # ── Eau recyclée — qualité ────────────────────────────────────────────
@@ -391,16 +432,20 @@ def generate_water_data(df: pd.DataFrame, seed: int = SEED) -> pd.DataFrame:
     ).round(3)
 
     # ── Eau brute — appoint ───────────────────────────────────────────────
-    # Évaporation (~1,4 %) + purge (~0,5 %) = ~1,9 % du débit circulation
-    makeup_base = df["recycled_water_flow_m3h"].values * 0.019
+    # Compensation pertes : évaporation aéros + purges + fuites → ~100 m³/h nominal
     df["raw_water_makeup_to_recycled_m3h"] = np.clip(
-        makeup_base + rng.normal(0.0, 1.2, n), 5.0, 35.0
+        _RW_MAKEUP_NOM + rng.normal(0.0, 8.0, n), 70.0, 130.0
     ).round(1)
 
     df["raw_water_flow_m3h"] = np.clip(
-        df["raw_water_makeup_to_recycled_m3h"].values + rng.normal(0.0, 1.5, n),
-        4.0, 38.0,
+        df["raw_water_makeup_to_recycled_m3h"].values + rng.normal(0.0, 4.0, n),
+        65.0, 140.0,
     ).round(1)
+
+    df["raw_water_dependency_ratio"] = np.clip(
+        df["raw_water_makeup_to_recycled_m3h"].values / df["recycled_water_flow_m3h"].values,
+        0.02, 0.08,
+    ).round(4)
 
     # ── Eau brute — bassins (marche aléatoire à retour à la moyenne) ──────
     def _basin_walk(
@@ -458,6 +503,12 @@ def generate_mock_plant_data(seed: int = SEED) -> pd.DataFrame:
     df = generate_electricity_data(df, seed)
     df = generate_air_data(df, seed)
     df = generate_water_data(df, seed)
+
+    pi = df["production_index"].values
+    df["plant_operating_mode"] = np.where(
+        pi < 0.65, "LOW",
+        np.where(pi < 0.85, "NORMAL", "HIGH"),
+    )
     return df
 
 

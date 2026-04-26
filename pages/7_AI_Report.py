@@ -1,206 +1,254 @@
-"""Page 7 — Rapport IA automatique : synthèse exportable de la session de supervision."""
+"""Page 7 — Rapport IA automatique : synthèse exportable de la session."""
 
 import streamlit as st
 from datetime import datetime
-
-st.set_page_config(
-    page_title="Rapport IA | AI Energy CR",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 from modules.ui_components import (
-    inject_custom_css,
-    render_sidebar,
-    render_header,
-    render_kpi_card,
-    render_status_badge,
-    render_section_title,
-    render_info_banner,
-    render_placeholder,
+    PAGE_CONFIG, inject_custom_css, render_scenario_sidebar,
+    render_header, render_kpi_card, render_section_title, render_info_banner,
+    score_to_status, plant_status_css, fmt_xpf,
+    STATUS_COLORS, SEVERITY_COLORS, _SCENARIO_FR,
+)
+from modules.state_manager import ensure_state
+
+st.set_page_config(**PAGE_CONFIG)
+inject_custom_css()
+ensure_state()
+render_scenario_sidebar()
+
+ss        = st.session_state
+anomalies = ss.get("anomalies", [])
+scoring   = ss.get("scoring_summary", {})
+recs      = ss.get("recommendations", [])
+biz       = ss.get("business_summary", {})
+scenario  = ss.get("selected_scenario", "nominal")
+
+g_score  = scoring.get("global_score", 0.0)
+g_status = scoring.get("status", "NORMAL")
+s_css    = plant_status_css(g_status)
+s_color  = STATUS_COLORS.get(s_css, "#00C853")
+scenario_label = _SCENARIO_FR.get(scenario, scenario)
+now_str  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+render_header("Rapport IA", "Synthèse automatique de la session de supervision", "📄")
+
+# ── KPIs rapport ──────────────────────────────────────────────────────────────
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    render_kpi_card("Statut global", g_status, "", status=s_css)
+with c2:
+    render_kpi_card("Score criticité", f"{g_score:.0f}", "/ 100", status=s_css)
+with c3:
+    render_kpi_card("Anomalies", str(len(anomalies)), "",
+                    status="alert" if anomalies else "ok")
+with c4:
+    render_kpi_card("Perte estimée", fmt_xpf(biz.get("total_loss_xpf", 0)), "XPF",
+                    status="alert" if biz.get("total_loss_xpf", 0) > 500_000 else "ok")
+
+# ── Résumé scénario ───────────────────────────────────────────────────────────
+render_section_title("Résumé de session", "📋")
+
+domain_scores = scoring.get("domain_scores", {})
+st.markdown(
+    f'<div style="background:#161A23;border:1px solid #2A2F3E;border-radius:6px;'
+    f'padding:14px 18px;margin-bottom:12px;">'
+    f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+    f'<div><span style="color:#6B7894;font-size:11px;">Date / Heure</span>'
+    f'<div style="color:#DDE3F0;font-size:12px;">{now_str}</div></div>'
+    f'<div><span style="color:#6B7894;font-size:11px;">Scénario actif</span>'
+    f'<div style="color:#DDE3F0;font-size:12px;">{scenario_label}</div></div>'
+    f'<div><span style="color:#6B7894;font-size:11px;">Statut usine</span>'
+    f'<div style="color:{s_color};font-size:12px;font-weight:700;">{g_status}</div></div>'
+    f'<div><span style="color:#6B7894;font-size:11px;">Score global</span>'
+    f'<div style="color:{s_color};font-size:12px;font-weight:700;">{g_score:.0f} / 100</div></div>'
+    f'<div><span style="color:#6B7894;font-size:11px;">Score électricité</span>'
+    f'<div style="color:#DDE3F0;font-size:12px;">{domain_scores.get("electricity_score",0):.0f}</div></div>'
+    f'<div><span style="color:#6B7894;font-size:11px;">Score air</span>'
+    f'<div style="color:#DDE3F0;font-size:12px;">{domain_scores.get("air_score",0):.0f}</div></div>'
+    f'<div><span style="color:#6B7894;font-size:11px;">Score eau</span>'
+    f'<div style="color:#DDE3F0;font-size:12px;">{domain_scores.get("water_score",0):.0f}</div></div>'
+    f'<div><span style="color:#6B7894;font-size:11px;">Économies potentielles</span>'
+    f'<div style="color:#00C853;font-size:12px;font-weight:700;">'
+    f'{fmt_xpf(biz.get("estimated_savings_xpf",0))} XPF</div></div>'
+    f'</div>'
+    f'</div>',
+    unsafe_allow_html=True,
 )
 
-inject_custom_css()
-render_sidebar()
+# ── Anomalies ─────────────────────────────────────────────────────────────────
+render_section_title("Anomalies détectées", "🚨")
 
-# ─────────────────────────────────────────────────────────────
-# Rapport markdown placeholder
-# ─────────────────────────────────────────────────────────────
-
-_REPORT_MD = f"""
-# Rapport de Supervision IA — Session du {datetime.now().strftime("%d/%m/%Y %H:%M")}
-
-**Usine :** Site de démonstration · **Mode :** Simulation · **Scénario :** Nominal avec anomalies
-
----
-
-## 1. Résumé Exécutif
-
-| Indicateur | Valeur |
-|------------|--------|
-| Niveau d'alerte global | 🟠 ALERTE |
-| Anomalies actives | 3 |
-| Exposition financière | 895 000 XPF/j |
-| Systèmes dégradés | Air 7 bars, Électricité 15 kV |
-| Systèmes nominaux | Eau recyclée, Eau brute |
-
-**Synthèse :** Le réseau air 7 bars présente une dégradation de pression liée
-à l'état du compresseur C715. Le réseau électrique 15 kV montre une légère
-sous-tension. Ces deux anomalies combinées représentent un risque opérationnel
-élevé si non corrigées dans les 2 prochaines heures.
-
----
-
-## 2. État des Systèmes
-
-| Système | Santé | Statut | Anomalies |
-|---------|-------|--------|-----------|
-| Électricité 63 kV | 94 % | 🟢 OK | 0 |
-| Électricité 15 kV | 71 % | 🟡 ATTENTION | 1 |
-| Air 7 bars | 52 % | 🔴 ALERTE | 1 |
-| Air 3 bars | 78 % | 🟡 ATTENTION | 1 |
-| Eau recyclée | 88 % | 🟢 OK | 0 |
-| Eau brute | 85 % | 🟢 OK | 0 |
-
----
-
-## 3. Anomalies Priorisées
-
-### 🔴 [CRITIQUE · Score 88] — Chute pression 7 bars
-- **Équipement :** C715 → réseau air instrumentation
-- **Valeur observée :** 6,4 bar · **Attendue :** ≥ 7,0 bar
-- **Règle :** PRESS_7BAR_LOW · **Depuis :** 23 minutes
-- **Impact :** Risque sur stabilité procédé et air de barrage
-- **Coût si non corrigé :** ~537 000 XPF/j
-
-### 🟠 [ÉLEVÉE · Score 62] — Tension 15 kV sous-consigne
-- **Équipement :** 15 kV bus A
-- **Valeur observée :** 14,2 kV · **Attendue :** 15,0 ±0,3 kV
-- **Règle :** VOLT_15KV_LOW · **Depuis :** 1 h 15
-- **Impact :** Réduction performance moteurs, risque sur sous-stations
-- **Coût si non corrigé :** ~250 000 XPF/j
-
-### 🟡 [MOYENNE · Score 34] — Conductivité eau recyclée
-- **Équipement :** Circuit primaire eau recyclée
-- **Valeur observée :** 620 µS/cm · **Seuil :** 500 µS/cm
-- **Règle :** COND_HIGH · **Depuis :** 3 h 42
-- **Impact :** Risque entartrage échangeurs + efficacité refroidissement
-- **Coût si non corrigé :** ~107 000 XPF/j
-
----
-
-## 4. Recommandations
-
-1. **[< 30 min]** Démarrer C716 en secours + diagnostic C715 (purges, aubes)
-2. **[< 2 h]** Contacter dispatching réseau · Réduire charge moteurs 5,5 kV non critiques
-3. **[< 4 h]** Analyser eau de compensation · Augmenter fréquence traitement
-
----
-
-## 5. Impact Financier
-
-| Poste | Coût journalier estimé |
-|-------|------------------------|
-| Air 7 bars (C715) | 537 000 XPF |
-| Tension 15 kV | 250 000 XPF |
-| Conductivité recyclée | 107 000 XPF |
-| **TOTAL** | **895 000 XPF/j** |
-
-*Retour sur correction estimé : < 1 heure pour les actions prioritaires.*
-
----
-
-*Rapport généré automatiquement — Valider avec l'opérateur de quart avant toute action.*
-"""
-
-
-# ─────────────────────────────────────────────────────────────
-# Page
-# ─────────────────────────────────────────────────────────────
-
-def render() -> None:
-    render_header(
-        title="Rapport IA Automatique",
-        subtitle="Synthèse de la session de supervision · Export PDF · Notes opérateur",
-        icon="📊",
-    )
-    render_info_banner(
-        "Le rapport est généré automatiquement à partir de l'état courant des systèmes, "
-        "des anomalies détectées et des recommandations IA. "
-        "Module <strong>report_generator.py</strong> à connecter."
-    )
-
-    # ── KPIs rapport ──────────────────────────────────────────
-    render_section_title("Métriques de la session", "📊")
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        render_kpi_card("Anomalies détectées", "3",       "",       status="warning")
-    with k2:
-        render_kpi_card("Niveau d'alerte",     "ALERTE",  "",       status="alert")
-    with k3:
-        render_kpi_card("Exposition totale",   "895 000",   "XPF/j", status="warning")
-    with k4:
-        render_kpi_card("Durée session",       "24 h",    "",       status="normal")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Rapport texte ─────────────────────────────────────────
-    col_report, col_actions = st.columns([3, 1])
-
-    with col_report:
-        render_section_title("Rapport de session", "📄")
-
-        tab_markdown, tab_preview = st.tabs(["✏️ Markdown brut", "👁️ Aperçu rendu"])
-        with tab_preview:
-            st.markdown(_REPORT_MD)
-        with tab_markdown:
-            st.code(_REPORT_MD, language="markdown")
-
-    with col_actions:
-        render_section_title("Actions", "🔧")
-
+if not anomalies:
+    st.success("Aucune anomalie. Fonctionnement nominal.")
+else:
+    for a in sorted(anomalies, key=lambda x: x.get("confidence_score", 0), reverse=True):
+        sc = SEVERITY_COLORS.get(a.get("severity", "low"), "#6B7894")
         st.markdown(
-            '<div class="kpi-card normal" style="margin-bottom:12px;">'
-            '  <div class="kpi-label">Export rapport</div>'
-            '</div>',
+            f'<div style="background:#161A23;border-left:3px solid {sc};'
+            f'border-radius:0 5px 5px 0;padding:10px 14px;margin-bottom:6px;">'
+            f'<div style="display:flex;justify-content:space-between;">'
+            f'<span style="font-size:13px;font-weight:600;color:#DDE3F0;">{a.get("title","")}</span>'
+            f'<span style="font-size:11px;font-weight:700;color:{sc};">'
+            f'{a.get("severity","").upper()}</span>'
+            f'</div>'
+            f'<div style="font-size:11px;color:#6B7894;margin-top:3px;">'
+            f'{a.get("asset","")} · {a.get("domain","").upper()} · '
+            f'Confiance {a.get("confidence_score",0):.0%}</div>'
+            f'<div style="font-size:11px;color:#8892A4;margin-top:3px;">{a.get("description","")}</div>'
+            f'</div>',
             unsafe_allow_html=True,
         )
-        st.button("⬇️ Exporter PDF",      use_container_width=True, disabled=True)
-        st.button("⬇️ Exporter Markdown", use_container_width=True, disabled=True)
-        st.caption("Export actif après connexion de report_generator.py")
 
-        st.markdown("---")
-        render_section_title("Notes opérateur", "📝")
-        notes = st.text_area(
-            "Saisir vos observations :",
-            placeholder="Ex : C715 arrêté pour maintenance préventive à 02h30. Reprise prévue 06h00.",
-            height=180,
-            label_visibility="collapsed",
+# ── Recommandations ───────────────────────────────────────────────────────────
+render_section_title("Recommandations prioritaires", "📋")
+
+if not recs:
+    st.info("Aucune recommandation pour le scénario en cours.")
+else:
+    for r in recs[:6]:
+        pc = {"urgent": "#D50000", "high": "#FF6D00", "medium": "#FFB300", "low": "#00C853"}.get(r.priority, "#6B7894")
+        st.markdown(
+            f'<div style="background:#161A23;border:1px solid #2A2F3E;border-radius:5px;'
+            f'padding:10px 14px;margin-bottom:6px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<span style="font-size:12px;font-weight:600;color:#DDE3F0;">{r.action_title}</span>'
+            f'<div>'
+            f'<span style="font-size:11px;font-weight:700;color:{pc};">{r.priority.upper()}</span>'
+            f'<span style="font-size:11px;color:#00C853;margin-left:12px;">'
+            f'{fmt_xpf(r.estimated_saving_xpf)} XPF</span>'
+            f'</div>'
+            f'</div>'
+            f'<div style="font-size:11px;color:#8892A4;margin-top:4px;">{r.action_detail[:120]}</div>'
+            f'<div style="font-size:10px;color:#6B7894;margin-top:3px;">'
+            f'Difficulté : {r.implementation_difficulty} · '
+            f'Réduction risque : {r.estimated_risk_reduction_pct:.0f} %</div>'
+            f'</div>',
+            unsafe_allow_html=True,
         )
-        st.button("💾 Sauvegarder notes", use_container_width=True, disabled=not notes)
 
-        st.markdown("---")
-        render_section_title("Paramètres économiques", "💰")
-        st.number_input("Coût kWh (XPF)",          value=22, step=1)
-        st.number_input("Coût arrêt prod. (XPF/h)", value=1_790_000, step=10_000)
-        st.button("♻️ Recalculer rapport", use_container_width=True, disabled=True)
+# ── ROI Summary ───────────────────────────────────────────────────────────────
+render_section_title("Synthèse financière", "💰")
+roi_text = biz.get("roi_summary", "")
+if roi_text:
+    render_info_banner(roi_text)
+else:
+    render_info_banner("Aucune perte estimée — fonctionnement nominal.")
 
-    # ── Structure du rapport à venir ──────────────────────────
-    render_section_title("Structure du rapport complet (à venir)", "🗂️")
-    sections = [
-        ("1", "Résumé exécutif",         "Niveau d'alerte global · Chiffres clés · Synthèse"),
-        ("2", "État des systèmes",        "Scores de santé · Tendances · Comparatif"),
-        ("3", "Anomalies priorisées",     "Liste complète avec scores, règles déclenchées"),
-        ("4", "Recommandations",          "Procédures pas à pas · Urgences · Bénéfices"),
-        ("5", "Impact financier",         "Breakdown par système · Retour sur action"),
-        ("6", "Simulation résultats",     "Comparatif avant/après pour actions appliquées"),
-        ("7", "Notes & historique",       "Observations opérateur · Événements journée"),
+# ── Note sécurité ─────────────────────────────────────────────────────────────
+render_section_title("Note de sécurité", "⚠️")
+st.markdown(
+    '<div style="background:rgba(213,0,0,.07);border:1px solid rgba(213,0,0,.2);'
+    'border-radius:5px;padding:12px 16px;font-size:12px;color:#FF6B6B;line-height:1.6;">'
+    '<strong>SIMULATION UNIQUEMENT</strong><br>'
+    'Ce rapport est généré à partir de données simulées à des fins de démonstration. '
+    'Aucune commande industrielle réelle n\'est émise. '
+    'Toute action corrective doit faire l\'objet d\'une validation humaine '
+    'par le personnel qualifié avant exécution.'
+    '</div>',
+    unsafe_allow_html=True,
+)
+
+# ── Téléchargement rapport Markdown ──────────────────────────────────────────
+render_section_title("Export rapport", "💾")
+
+def _build_markdown_report() -> str:
+    lines = [
+        f"# Rapport IA — AI Energy & Utilities Control Room",
+        f"",
+        f"**Date :** {now_str}  ",
+        f"**Scénario :** {scenario_label}  ",
+        f"**Statut usine :** {g_status}  ",
+        f"**Score global :** {g_score:.0f} / 100",
+        f"",
+        f"---",
+        f"",
+        f"## Scores par domaine",
+        f"",
+        f"| Domaine | Score |",
+        f"|---------|-------|",
+        f"| Électricité | {domain_scores.get('electricity_score',0):.0f} |",
+        f"| Air comprimé | {domain_scores.get('air_score',0):.0f} |",
+        f"| Eau | {domain_scores.get('water_score',0):.0f} |",
+        f"",
+        f"---",
+        f"",
+        f"## Anomalies détectées ({len(anomalies)})",
+        f"",
     ]
-    for num, title, desc in sections:
-        with st.expander(f"Section {num} — {title}"):
-            st.markdown(f"*{desc}*")
-            render_placeholder(f"Sera peuplé par report_generator.py → {title.lower().replace(' ', '_')}")
+    if anomalies:
+        for a in sorted(anomalies, key=lambda x: x.get("confidence_score",0), reverse=True):
+            lines += [
+                f"### {a.get('title','')}",
+                f"- **Sévérité :** {a.get('severity','').upper()}",
+                f"- **Domaine :** {a.get('domain','').upper()}",
+                f"- **Asset :** {a.get('asset','')}",
+                f"- **Confiance :** {a.get('confidence_score',0):.1%}",
+                f"- **Période :** {a.get('timestamp_start','')[:16]} → {a.get('timestamp_end','')[:16]}",
+                f"- **Description :** {a.get('description','')}",
+                f"",
+                f"**Causes probables :**",
+            ]
+            for c in a.get("probable_causes", []):
+                lines.append(f"- {c}")
+            lines.append("")
+    else:
+        lines.append("_Aucune anomalie détectée._")
+        lines.append("")
+
+    lines += [
+        f"---",
+        f"",
+        f"## Recommandations ({len(recs)})",
+        f"",
+    ]
+    if recs:
+        for r in recs[:6]:
+            lines += [
+                f"### [{r.priority.upper()}] {r.action_title}",
+                f"- **Détail :** {r.action_detail}",
+                f"- **Effet attendu :** {r.expected_effect}",
+                f"- **Économie estimée :** {fmt_xpf(r.estimated_saving_xpf)} XPF",
+                f"- **Réduction risque :** {r.estimated_risk_reduction_pct:.0f} %",
+                f"- **Difficulté :** {r.implementation_difficulty}",
+                f"- **Validation humaine :** {'Requise' if r.human_validation_required else 'Non requise'}",
+                f"- **Sécurité :** {r.safety_note}",
+                f"",
+            ]
+    else:
+        lines.append("_Aucune recommandation._")
+        lines.append("")
+
+    lines += [
+        f"---",
+        f"",
+        f"## Synthèse financière",
+        f"",
+        f"- **Perte estimée :** {fmt_xpf(biz.get('total_loss_xpf',0))} XPF",
+        f"- **Perte évitable :** {fmt_xpf(biz.get('avoidable_loss_xpf',0))} XPF",
+        f"- **Économies potentielles :** {fmt_xpf(biz.get('estimated_savings_xpf',0))} XPF",
+        f"",
+        biz.get("roi_summary", ""),
+        f"",
+        f"---",
+        f"",
+        f"## Note de sécurité",
+        f"",
+        f"> SIMULATION UNIQUEMENT. Ce rapport est généré à partir de données simulées.",
+        f"> Toute action corrective requiert une validation humaine par le personnel qualifié.",
+        f"",
+        f"---",
+        f"*Rapport généré par AI Energy & Utilities Control Room v0.2.0*",
+    ]
+    return "\n".join(lines)
 
 
-render()
+report_md = _build_markdown_report()
+st.download_button(
+    label="📥 Télécharger le rapport (Markdown)",
+    data=report_md,
+    file_name=f"rapport_ia_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+    mime="text/markdown",
+)
+
+# Aperçu
+with st.expander("Aperçu du rapport Markdown"):
+    st.markdown(report_md)

@@ -1,155 +1,150 @@
 """
-AI Energy & Utilities Control Room — page d'accueil.
+AI Energy & Utilities Control Room — Page d'accueil
 """
 
 import streamlit as st
-
-st.set_page_config(
-    page_title="AI Energy Control Room",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 from modules.ui_components import (
-    inject_custom_css,
-    render_sidebar,
-    render_header,
-    render_status_badge,
-    render_section_title,
-    render_info_banner,
-    placeholder_timeseries,
+    PAGE_CONFIG, inject_custom_css, render_scenario_sidebar,
+    render_kpi_card, render_section_title,
+    render_status_badge, score_to_status, plant_status_css,
+    fmt_xpf, STATUS_COLORS, SEVERITY_COLORS,
 )
+from modules.state_manager import ensure_state
 
+st.set_page_config(**PAGE_CONFIG)
 inject_custom_css()
-render_sidebar()
+ensure_state()
+render_scenario_sidebar()
 
-# ─────────────────────────────────────────────────────────────
-# Données de démonstration (home uniquement)
-# ─────────────────────────────────────────────────────────────
+ss = st.session_state
+scoring   = ss.get("scoring_summary", {})
+biz       = ss.get("business_summary", {})
+anomalies = ss.get("anomalies", [])
 
-_SYSTEMS = [
-    ("⚡", "Électricité",    "63 kV · 15 kV · 5,5 kV · 400 V",            "normal",   "2_Electricity"),
-    ("💨", "Air Comprimé",   "7 bars (instrumentation) · 3 bars (transport)", "warning",  "3_Compressed_Air"),
-    ("♻️", "Eau Recyclée",   "Refroidissement · Tours aéro · Légionelle",   "ok",       "4_Water"),
-    ("💧", "Eau Brute",      "Bassins B0 & B1 · Appoint · Secours",         "ok",       "4_Water"),
-]
+# ── Header ────────────────────────────────────────────────────────────────────
+g_score  = scoring.get("global_score", 0.0)
+g_status = scoring.get("status", "NORMAL")
+s_css    = plant_status_css(g_status)
+s_color  = STATUS_COLORS.get(s_css, "#00C853")
 
-_PAGES = [
-    ("🏭", "Vue Globale",          "Statut temps-réel de toute l'usine"),
-    ("⚡", "Électricité",          "Filière 63 kV → 400 V"),
-    ("💨", "Air Comprimé",         "Réseaux 7 bars et 3 bars"),
-    ("💧", "Eau",                  "Recyclée & brute"),
-    ("🤖", "Détection IA",         "Anomalies · Scores · Chatbot"),
-    ("🔬", "Simulation",           "What-if · Avant / Après"),
-    ("📊", "Rapport IA",           "Synthèse exportable PDF"),
-]
-
-# ─────────────────────────────────────────────────────────────
-# Hero
-# ─────────────────────────────────────────────────────────────
-
-render_header(
-    title="AI Energy & Utilities Control Room",
-    subtitle="Supervision industrielle augmentée par l'IA — prototype de démonstration pédagogique",
-    icon="⚡",
+st.markdown(
+    f'<div style="background:linear-gradient(135deg,#0D1017 0%,#111827 100%);'
+    f'border:1px solid #2A2F3E;border-radius:10px;padding:26px 30px;margin-bottom:18px;">'
+    f'<div style="font-size:26px;font-weight:700;color:#DDE3F0;margin-bottom:5px;">'
+    f'⚡ AI Energy & Utilities Control Room</div>'
+    f'<div style="font-size:13px;color:#6B7894;margin-bottom:14px;">'
+    f'Supervision industrielle augmentée par intelligence artificielle</div>'
+    f'<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">'
+    f'<div style="background:rgba(0,0,0,.3);border:1px solid #2A2F3E;border-radius:5px;'
+    f'padding:7px 16px;font-size:12px;color:{s_color};font-weight:700;">'
+    f'Statut usine : {g_status}</div>'
+    f'<div style="font-size:12px;color:#6B7894;">Score : '
+    f'<span style="color:{s_color};font-weight:700;">{g_score:.0f} / 100</span></div>'
+    f'<div style="font-size:12px;color:#6B7894;">Anomalies actives : '
+    f'<span style="color:{"#FF6D00" if anomalies else "#00C853"};font-weight:700;">'
+    f'{len(anomalies)}</span></div>'
+    f'</div>'
+    f'</div>',
+    unsafe_allow_html=True,
 )
 
-render_info_banner(
-    "Toutes les données sont <strong>simulées</strong> avec un seed fixe pour la reproductibilité. "
-    "Aucune connexion SCADA réelle n'est établie."
+# ── KPIs ──────────────────────────────────────────────────────────────────────
+c1, c2, c3, c4 = st.columns(4)
+n_critical = sum(1 for a in anomalies if a.get("severity") == "critical")
+total_loss = biz.get("total_loss_xpf", 0.0)
+savings    = biz.get("estimated_savings_xpf", 0.0)
+
+with c1:
+    render_kpi_card("Score criticité", f"{g_score:.0f}", "/ 100", status=s_css)
+with c2:
+    render_kpi_card(
+        "Anomalies actives", str(len(anomalies)), "",
+        delta=f"+{n_critical} critiques" if n_critical else None,
+        status="critical" if n_critical else ("alert" if anomalies else "ok"),
+    )
+with c3:
+    render_kpi_card(
+        "Perte estimée", fmt_xpf(total_loss), "XPF",
+        status="alert" if total_loss > 500_000 else ("warning" if total_loss > 0 else "ok"),
+    )
+with c4:
+    render_kpi_card("Économies potentielles", fmt_xpf(savings), "XPF",
+                    status="ok" if savings > 0 else "normal")
+
+# ── Phrase clé ────────────────────────────────────────────────────────────────
+st.markdown(
+    '<div style="background:rgba(0,176,255,.06);border:1px solid rgba(0,176,255,.2);'
+    'border-radius:6px;padding:14px 20px;margin:16px 0;text-align:center;'
+    'font-size:15px;font-style:italic;color:#00B0FF;">'
+    '"Le SCADA montre ce qui se passe. L\'IA explique pourquoi et quoi faire."'
+    '</div>',
+    unsafe_allow_html=True,
 )
 
-col_desc, col_badge = st.columns([3, 1])
-with col_desc:
-    st.markdown("""
-Cette application illustre comment une IA peut **superviser une usine**, **détecter des anomalies**,
-**expliquer les causes** et **proposer des actions correctives** avec estimation de l'impact économique.
-
-> Utilisez le menu **←** pour naviguer entre les systèmes.
-""")
-with col_badge:
-    st.markdown(render_status_badge("warning", "MODE DÉMO"), unsafe_allow_html=True)
-    st.caption("Données simulées · Seed 42")
-
-# ─────────────────────────────────────────────────────────────
-# Systèmes supervisés
-# ─────────────────────────────────────────────────────────────
-
+# ── Tuiles systèmes ───────────────────────────────────────────────────────────
 render_section_title("Systèmes supervisés", "🏭")
-
-cols = st.columns(4)
-for col, (icon, name, desc, status, _) in zip(cols, _SYSTEMS):
+domain_scores = scoring.get("domain_scores", {})
+tiles = [
+    ("⚡", "Électricité",    "Fours 63 kV · CAT · 15 kV",         domain_scores.get("electricity_score", 0.0)),
+    ("💨", "Air 7 bars",    "Compresseurs C713–C717 · Process",    domain_scores.get("air_score", 0.0)),
+    ("💨", "Air 3 bars",    "VSD C321–C323 · Transport",           domain_scores.get("air_score", 0.0)),
+    ("♻️", "Eau recyclée",  "Refroidissement · Légionelle",        domain_scores.get("water_score", 0.0)),
+    ("💧", "Eau brute",     "Bassins B0/B1 · Appoint",             domain_scores.get("water_score", 0.0)),
+]
+for col, (icon, name, desc, score) in zip(st.columns(5), tiles):
+    c2 = STATUS_COLORS.get(score_to_status(score), "#00C853")
     with col:
-        badge = render_status_badge(status)
         st.markdown(
-            f'<div class="sys-tile">'
-            f'  <div class="sys-tile-icon">{icon}</div>'
-            f'  <div class="sys-tile-name">{name}</div>'
-            f'  <div class="sys-tile-desc">{desc}</div>'
-            f'  {badge}'
+            f'<div class="sys-tile" style="border-top:2px solid {c2};">'
+            f'<div class="sys-tile-icon">{icon}</div>'
+            f'<div class="sys-tile-name">{name}</div>'
+            f'<div class="sys-tile-desc">{desc}</div>'
+            f'<div style="font-size:22px;font-weight:700;color:{c2};'
+            f'font-family:Courier New,monospace;">{score:.0f}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
 
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────
-# Valeur ajoutée IA + aperçu graphique
-# ─────────────────────────────────────────────────────────────
-
-col_left, col_right = st.columns([1, 2])
-
-with col_left:
-    render_section_title("Valeur ajoutée de l'IA", "🎯")
-    st.markdown("""
-**Sans IA**
-- Courbes brutes sans contexte
-- Alertes binaires seuil / hors-seuil
-- Réaction après dégradation visible
-- Pas d'estimation d'impact
-
-**Avec IA**
-- Détection précoce avec explication
-- Scoring de criticité multi-critères
-- Recommandations priorisées
-- Estimation financière par anomalie
-""")
-
-with col_right:
-    render_section_title("Aperçu — 24 h de données simulées", "📈")
-    fig = placeholder_timeseries(
-        "Charge relative des 4 systèmes (%)",
-        y_label="%",
-        n_series=4,
-        height=270,
-        seed=42,
-    )
-    _names = ["Électricité", "Air 7 bars", "Eau recyclée", "Eau brute"]
-    for i, name in enumerate(_names):
-        fig.data[i].name = name
-    fig.update_layout(
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.02,
-            xanchor="right", x=1, bgcolor="rgba(0,0,0,0)",
-        )
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# ─────────────────────────────────────────────────────────────
-# Guide de navigation
-# ─────────────────────────────────────────────────────────────
-
-render_section_title("Pages disponibles", "🗺️")
-
-nav_cols = st.columns(len(_PAGES))
-for col, (icon, page_name, page_desc) in zip(nav_cols, _PAGES):
-    with col:
+# ── Top risques ───────────────────────────────────────────────────────────────
+if anomalies:
+    render_section_title("Top risques actifs", "🚨")
+    top = sorted(anomalies, key=lambda a: a.get("confidence_score", 0), reverse=True)[:5]
+    for a in top:
+        sc = SEVERITY_COLORS.get(a.get("severity", "low"), "#6B7894")
         st.markdown(
-            f'<div class="kpi-card normal" style="text-align:center;min-height:80px;">'
-            f'  <div style="font-size:20px;">{icon}</div>'
-            f'  <div class="kpi-label" style="margin-top:6px;">{page_name}</div>'
-            f'  <div style="font-size:10px;color:#3A4258;">{page_desc}</div>'
+            f'<div style="background:#161A23;border-left:3px solid {sc};'
+            f'border-radius:0 5px 5px 0;padding:10px 14px;margin-bottom:6px;">'
+            f'<span style="font-size:13px;font-weight:600;color:#DDE3F0;">{a.get("title","")}</span>'
+            f'&nbsp;&nbsp;<span style="font-size:11px;color:#6B7894;">'
+            f'{a.get("asset","")}&nbsp;·&nbsp;{a.get("domain","").upper()}</span>'
+            f'<span style="float:right;font-size:11px;color:{sc};font-weight:700;">'
+            f'{a.get("severity","").upper()}&nbsp;·&nbsp;{a.get("confidence_score",0):.0%}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+else:
+    st.success("Aucune anomalie active. Fonctionnement nominal de l'usine.")
+
+# ── Navigation ────────────────────────────────────────────────────────────────
+render_section_title("Pages de supervision", "📑")
+nav = [
+    ("📊", "Vue d'ensemble",  "Tableau de bord global usine"),
+    ("⚡", "Électricité",     "63 kV → 15 kV → 5,5 kV / 400 V"),
+    ("💨", "Air comprimé",   "Réseaux 7 bars et 3 bars"),
+    ("♻️", "Eau",             "Recyclée & brute, bassins"),
+    ("🤖", "Détection IA",   "Anomalies, scoring, diagnostic"),
+    ("🔬", "Simulation",      "Comparaison nominal vs scénario"),
+    ("📄", "Rapport IA",      "Synthèse exportable"),
+]
+for i, row in enumerate(nav):
+    icon, label, desc = row
+    with st.columns(4)[i % 4]:
+        st.markdown(
+            f'<div style="background:#161A23;border:1px solid #2A2F3E;border-radius:6px;'
+            f'padding:13px;text-align:center;margin-bottom:8px;">'
+            f'<div style="font-size:22px;">{icon}</div>'
+            f'<div style="font-size:12px;font-weight:600;color:#DDE3F0;margin:4px 0 2px;">{label}</div>'
+            f'<div style="font-size:10px;color:#6B7894;">{desc}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )

@@ -1,141 +1,180 @@
 """Page 4 — Supervision Eau : eau recyclée (refroidissement) et eau brute (bassins B0/B1)."""
 
 import streamlit as st
-
-st.set_page_config(
-    page_title="Eau | AI Energy CR",
-    page_icon="💧",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 from modules.ui_components import (
-    inject_custom_css,
-    render_sidebar,
-    render_header,
-    render_kpi_card,
-    render_status_badge,
-    render_section_title,
-    render_info_banner,
-    placeholder_timeseries,
-    placeholder_gauge,
+    PAGE_CONFIG, inject_custom_css, render_scenario_sidebar,
+    render_header, render_kpi_card, render_section_title,
+    make_timeseries, render_ia_block, fmt_xpf, SEVERITY_COLORS,
 )
+from modules.state_manager import ensure_state
 
+st.set_page_config(**PAGE_CONFIG)
 inject_custom_css()
-render_sidebar()
+ensure_state()
+render_scenario_sidebar()
 
+ss        = st.session_state
+df        = ss["df_current"]
+anomalies = ss.get("anomalies", [])
+recs      = ss.get("recommendations", [])
+biz       = ss.get("business_summary", {})
 
-def render() -> None:
-    render_header(
-        title="Supervision Eau",
-        subtitle="Eau recyclée (refroidissement fours · tours aéro · légionelle) · Eau brute (bassins B0 & B1)",
-        icon="💧",
+shade = "water"  # zone d'anomalie n'apparaît que pour anomalies eau
+last  = df.iloc[-1]
+
+render_header("Supervision Eau", "Eau recyclée (refroidissement) & eau brute (bassins)", "♻️")
+
+# ═══════════════════════════════════════════════════════════════
+# EAU RECYCLÉE
+# ═══════════════════════════════════════════════════════════════
+render_section_title("Circuit eau recyclée — Refroidissement process", "🌊")
+
+c1, c2, c3, c4, c5 = st.columns(5)
+flow_rw = last["recycled_water_flow_m3h"]
+leg     = last["legionella_risk_index"]
+chem    = last["chemical_treatment_index"]
+dt      = last["recycled_water_delta_t_c"]
+eff     = last["recycled_water_efficiency_index"]
+
+with c1:
+    render_kpi_card("Débit eau recyclée", f"{flow_rw:.0f}", "m³/h",
+                    status="alert" if flow_rw < 1800 else "ok")
+with c2:
+    render_kpi_card(
+        "Température départ / retour",
+        f"{last['recycled_water_supply_temp_c']:.1f} / {last['recycled_water_return_temp_c']:.1f}",
+        "°C", status="normal",
     )
-    render_info_banner(
-        "L'eau recyclée est critique pour la <strong>thermique procédé</strong> et la "
-        "<strong>sécurité sanitaire</strong> (légionelle). "
-        "L'eau brute (B0 & B1) constitue le secours de refroidissement."
+with c3:
+    render_kpi_card("Delta T", f"{dt:.2f}", "°C",
+                    status="alert" if dt > 8 else ("warning" if dt > 7 else "ok"))
+with c4:
+    render_kpi_card("Efficacité refroid.", f"{eff:.3f}", "",
+                    status="warning" if eff < 0.80 else "ok")
+with c5:
+    render_kpi_card("Indice légionelle", f"{leg:.3f}", "",
+                    status="critical" if leg > 0.85 else ("alert" if leg > 0.65 else "ok"))
+
+# Températures & débit
+col_a, col_b = st.columns(2)
+with col_a:
+    fig_temps = make_timeseries(
+        df,
+        series=[
+            {"col": "recycled_water_supply_temp_c",  "name": "Départ (°C)",  "color": "#00B0FF"},
+            {"col": "recycled_water_return_temp_c",  "name": "Retour (°C)",  "color": "#FF6D00"},
+            {"col": "recycled_water_delta_t_c",      "name": "Delta T (°C)", "color": "#FFB300", "dash": "dot"},
+        ],
+        title="Températures eau recyclée",
+        y_label="°C",
+        height=260,
+        shade_anomaly=shade,
+        thresholds=[{"value": 8.0, "name": "Seuil delta T", "color": "#FF6D00"}],
     )
+    st.plotly_chart(fig_temps, use_container_width=True)
 
-    # ── KPIs ──────────────────────────────────────────────────
-    render_section_title("Indicateurs clés", "📊")
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        render_kpi_card("Débit eau recyclée",  "850",  "m³/h",  delta="+12",     status="ok")
-    with k2:
-        render_kpi_card("Température circuit", "28.4", "°C",    delta="+1.2 °C", status="normal")
-    with k3:
-        render_kpi_card("Niveau bassin B0",    "68",   "%",     status="ok")
-    with k4:
-        render_kpi_card("Niveau bassin B1",    "31",   "%",     delta="-18 %",   status="warning")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Eau recyclée — courbes ─────────────────────────────────
-    render_section_title("Eau recyclée — tendances 24 h", "♻️")
-    c1, c2 = st.columns(2)
-    with c1:
-        fig_t = placeholder_timeseries(
-            "Température eau recyclée (°C)",
-            y_label="°C",
-            n_series=1,
-            height=250,
-            seed=40,
-        )
-        fig_t.add_hline(y=35, line_dash="dot", line_color="#FF6D00", line_width=1.5,
-                        annotation_text="Seuil alerte 35 °C", annotation_position="top right",
-                        annotation_font_color="#FF6D00")
-        fig_t.update_yaxes(range=[15, 42])
-        fig_t.data[0].name = "Température"
-        st.plotly_chart(fig_t, use_container_width=True)
-    with c2:
-        fig_d = placeholder_timeseries(
-            "Débit eau recyclée (m³/h)",
-            y_label="m³/h",
-            n_series=1,
-            height=250,
-            seed=41,
-        )
-        fig_d.update_yaxes(range=[600, 1_100])
-        fig_d.data[0].name = "Débit"
-        st.plotly_chart(fig_d, use_container_width=True)
-
-    # ── Qualité eau recyclée ──────────────────────────────────
-    render_section_title("Qualité eau recyclée", "🔬")
-    q1, q2, q3, q4 = st.columns(4)
-    with q1:
-        st.plotly_chart(
-            placeholder_gauge("pH", 7.6, 0, 14, "", 200, warn_threshold=8.5),
-            use_container_width=True,
-        )
-    with q2:
-        st.plotly_chart(
-            placeholder_gauge("Conductivité (µS/cm)", 620, 0, 1_200, "µS/cm", 200, warn_threshold=800),
-            use_container_width=True,
-        )
-    with q3:
-        st.plotly_chart(
-            placeholder_gauge("Turbidité (NTU)", 4.2, 0, 20, "NTU", 200, warn_threshold=10),
-            use_container_width=True,
-        )
-    with q4:
-        st.plotly_chart(
-            placeholder_gauge("Score risque légionelle", 18, 0, 100, "/100", 200, warn_threshold=50),
-            use_container_width=True,
-        )
-
-    # ── Eau brute — bassins ────────────────────────────────────
-    render_section_title("Eau brute — Bassins B0 et B1", "💧")
-    b1, b2, b3 = st.columns([1, 1, 2])
-    with b1:
-        st.plotly_chart(
-            placeholder_gauge("Bassin B0 — Niveau", 68, 0, 100, "%", 240, warn_threshold=20),
-            use_container_width=True,
-        )
-    with b2:
-        st.plotly_chart(
-            placeholder_gauge("Bassin B1 — Niveau", 31, 0, 100, "%", 240, warn_threshold=20),
-            use_container_width=True,
-        )
-    with b3:
-        fig_b = placeholder_timeseries(
-            "Niveaux bassins 24 h (%)",
-            y_label="%",
-            n_series=2,
-            height=240,
-            seed=50,
-        )
-        fig_b.data[0].name = "B0"
-        fig_b.data[1].name = "B1"
-        fig_b.add_hline(y=20, line_dash="dot", line_color="#D50000", line_width=1,
-                        annotation_text="Seuil critique 20 %", annotation_font_color="#D50000")
-        st.plotly_chart(fig_b, use_container_width=True)
-
-    st.warning(
-        "**Bassin B1 à 31 %** — niveau en baisse continue depuis 6 h. "
-        "Vérifier débit d'appoint et consommation secours.",
-        icon="⚠️",
+with col_b:
+    fig_flow_rw = make_timeseries(
+        df,
+        series=[
+            {"col": "recycled_water_flow_m3h",      "name": "Débit recyclée (m³/h)",  "color": "#00C853"},
+            {"col": "recycled_water_pressure_bar",  "name": "Pression (bar) ×100",    "color": "#7B61FF"},
+        ],
+        title="Débit et pression eau recyclée",
+        y_label="m³/h",
+        height=260,
+        shade_anomaly=shade,
+        thresholds=[{"value": 1800, "name": "Min débit", "color": "#FF6D00"}],
     )
+    st.plotly_chart(fig_flow_rw, use_container_width=True)
 
+# Légionelle & traitement chimique
+render_section_title("Qualité eau — Risque légionelle", "🧪")
 
-render()
+col_c, col_d = st.columns(2)
+with col_c:
+    fig_leg = make_timeseries(
+        df,
+        series=[
+            {"col": "legionella_risk_index",      "name": "Indice risque légionelle", "color": "#D50000"},
+            {"col": "chemical_treatment_index",   "name": "Traitement chimique",      "color": "#00C853"},
+        ],
+        title="Légionelle vs traitement chimique",
+        y_label="index [0-1]",
+        height=240,
+        shade_anomaly=shade,
+        thresholds=[{"value": 0.65, "name": "Seuil légionelle", "color": "#FF6D00"}],
+    )
+    st.plotly_chart(fig_leg, use_container_width=True)
+
+with col_d:
+    fig_pumps = make_timeseries(
+        df,
+        series=[
+            {"col": "aero_power_kw",                  "name": "Aéros (kW)",             "color": "#00B0FF"},
+            {"col": "recycled_water_pump_power_kw",   "name": "Pompes recyclée (kW)",   "color": "#7B61FF"},
+        ],
+        title="Puissance équipements eau recyclée",
+        y_label="kW",
+        height=240,
+        shade_anomaly=shade,
+    )
+    st.plotly_chart(fig_pumps, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════
+# EAU BRUTE
+# ═══════════════════════════════════════════════════════════════
+render_section_title("Eau brute — Bassins B0 / B1 & appoint", "💧")
+
+e1, e2, e3, e4 = st.columns(4)
+b0 = last["basin_b0_level_pct"]
+b1 = last["basin_b1_level_pct"]
+dep = last["raw_water_dependency_ratio"]
+mk  = last["raw_water_makeup_to_recycled_m3h"]
+
+with e1:
+    render_kpi_card("Bassin B0 niveau", f"{b0:.1f}", "%",
+                    status="critical" if b0 < 15 else ("alert" if b0 < 20 else "ok"))
+with e2:
+    render_kpi_card("Bassin B1 niveau", f"{b1:.1f}", "%",
+                    status="critical" if b1 < 15 else ("alert" if b1 < 20 else "ok"))
+with e3:
+    render_kpi_card("Dépendance eau brute", f"{dep:.3f}", "",
+                    status="alert" if dep > 0.12 else ("warning" if dep > 0.08 else "ok"))
+with e4:
+    render_kpi_card("Appoint eau brute", f"{mk:.1f}", "m³/h",
+                    status="alert" if mk > 165 else ("warning" if mk > 130 else "ok"))
+
+col_e, col_f = st.columns(2)
+with col_e:
+    fig_basins = make_timeseries(
+        df,
+        series=[
+            {"col": "basin_b0_level_pct", "name": "Bassin B0 niveau (%)", "color": "#00B0FF"},
+            {"col": "basin_b1_level_pct", "name": "Bassin B1 niveau (%)", "color": "#00C853"},
+        ],
+        title="Niveaux bassins B0 / B1",
+        y_label="%",
+        height=250,
+        shade_anomaly=shade,
+        thresholds=[{"value": 20.0, "name": "Seuil critique", "color": "#D50000"}],
+    )
+    st.plotly_chart(fig_basins, use_container_width=True)
+
+with col_f:
+    fig_raw = make_timeseries(
+        df,
+        series=[
+            {"col": "raw_water_makeup_to_recycled_m3h", "name": "Appoint vers recyclée (m³/h)", "color": "#FFB300"},
+            {"col": "emergency_cooling_capacity_m3h",   "name": "Capacité secours (m³/h)",       "color": "#7B61FF", "dash": "dot"},
+        ],
+        title="Appoint eau brute & capacité secours",
+        y_label="m³/h",
+        height=250,
+        shade_anomaly=shade,
+        thresholds=[{"value": 165.0, "name": "Max appoint", "color": "#FF6D00"}],
+    )
+    st.plotly_chart(fig_raw, use_container_width=True)
+
+# ── Bloc IA ───────────────────────────────────────────────────────────────────
+render_ia_block(anomalies, recs, biz, domain_filter="water")

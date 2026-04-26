@@ -1,114 +1,140 @@
 """Page 2 — Supervision Électricité : filière 63 kV → 15 kV → 5,5 kV / 400 V."""
 
 import streamlit as st
-
-st.set_page_config(
-    page_title="Électricité | AI Energy CR",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 from modules.ui_components import (
-    inject_custom_css,
-    render_sidebar,
-    render_header,
-    render_kpi_card,
-    render_status_badge,
-    render_section_title,
-    render_info_banner,
-    placeholder_timeseries,
-    placeholder_gauge,
+    PAGE_CONFIG, inject_custom_css, render_scenario_sidebar,
+    render_header, render_kpi_card, render_section_title,
+    make_timeseries, render_ia_block, fmt_xpf, SEVERITY_COLORS,
+)
+from modules.state_manager import ensure_state
+
+st.set_page_config(**PAGE_CONFIG)
+inject_custom_css()
+ensure_state()
+render_scenario_sidebar()
+
+ss        = st.session_state
+df        = ss["df_current"]
+anomalies = ss.get("anomalies", [])
+recs      = ss.get("recommendations", [])
+biz       = ss.get("business_summary", {})
+
+shade = "electricity"  # zone d'anomalie n'apparaît que pour anomalies électriques
+
+render_header(
+    "Supervision Électricité",
+    "Fours 63 kV · Centrale CAT · Réseau 15 kV · Sous-stations",
+    "⚡",
 )
 
-inject_custom_css()
-render_sidebar()
+# ── Architecture ──────────────────────────────────────────────────────────────
+st.markdown(
+    '<div style="background:#161A23;border:1px solid #2A2F3E;border-radius:6px;'
+    'padding:12px 16px;margin-bottom:16px;font-size:12px;color:#8892A4;">'
+    '<strong style="color:#DDE3F0;">Architecture réseau :</strong>&nbsp;&nbsp;'
+    '63 kV (Fours + CAT + Réseau) → 15 kV (Force motrice) '
+    '→ 5,5 kV (Compresseurs + Pompes + Moteurs) / 400 V (Auxiliaires)'
+    '</div>',
+    unsafe_allow_html=True,
+)
 
+# ── KPIs ──────────────────────────────────────────────────────────────────────
+last = df.iloc[-1]
+daily_cost = df["energy_cost_xpf"].sum()
 
-def render() -> None:
-    render_header(
-        title="Supervision Électricité",
-        subtitle="Filière 63 kV (poste source) → 15 kV (force motrice) → 5,5 kV / 400 V",
-        icon="⚡",
-    )
-    render_info_banner(
-        "Règle énergétique : <strong>63 kV → 15 kV → sous-stations → 5,5 kV / 400 V</strong>. "
-        "Sources : réseau externe + centrale interne CAT."
-    )
+c1, c2, c3, c4, c5 = st.columns(5)
+with c1:
+    render_kpi_card("Bus 63 kV", f"{last['total_63kv_bus_mw']:.1f}", "MW", status="normal")
+with c2:
+    cat_val = last["cat_generation_63kv_mw"]
+    render_kpi_card("CAT génération", f"{cat_val:.1f}", "MW",
+                    status="warning" if cat_val < 70 else "ok")
+with c3:
+    gi = last["grid_import_63kv_mw"]
+    render_kpi_card("Import réseau", f"{gi:.1f}", "MW",
+                    status="warning" if gi > 50 else "ok")
+with c4:
+    render_kpi_card("Poste 15 kV", f"{last['station_15kv_supply_mw']:.1f}", "MW",
+                    status="alert" if last["station_15kv_supply_mw"] > 26 else "ok")
+with c5:
+    render_kpi_card("Coût énergie 24 h", fmt_xpf(daily_cost), "XPF", status="normal")
 
-    # ── KPIs ──────────────────────────────────────────────────
-    render_section_title("Indicateurs clés", "📊")
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        render_kpi_card("Puissance 63 kV",       "87.4",  "MW",  delta="+2.1",     status="normal")
-    with k2:
-        render_kpi_card("Tension 15 kV",          "14.8",  "kV",  delta="-0.2 kV",  status="warning")
-    with k3:
-        render_kpi_card("Charge sous-stations",   "72",    "%",   delta="+5 %",     status="normal")
-    with k4:
-        render_kpi_card("Consommation 400 V",     "3.2",   "MW",  status="ok")
+# ── Fours 63 kV ───────────────────────────────────────────────────────────────
+render_section_title("Fours industriels 63 kV", "🔥")
 
-    st.markdown("<br>", unsafe_allow_html=True)
+fig_furnaces = make_timeseries(
+    df,
+    series=[
+        {"col": "furnace_1_63kv_mw", "name": "Four 1 (MW)", "color": "#00B0FF"},
+        {"col": "furnace_2_63kv_mw", "name": "Four 2 (MW)", "color": "#FF6D00"},
+        {"col": "furnace_3_63kv_mw", "name": "Four 3 (MW)", "color": "#00C853"},
+    ],
+    title="Puissance fours 63 kV",
+    y_label="MW",
+    height=280,
+    shade_anomaly=shade,
+    thresholds=[{"value": 62.0, "name": "Seuil four 2", "color": "#FFB300"}],
+)
+st.plotly_chart(fig_furnaces, use_container_width=True)
 
-    # ── Courbes puissance & tension ────────────────────────────
-    render_section_title("Tendances 24 h", "📈")
-    c_left, c_right = st.columns(2)
-    with c_left:
-        fig1 = placeholder_timeseries(
-            "Puissance active 63 kV (MW)",
-            y_label="MW",
-            n_series=2,
-            height=250,
-            seed=10,
+# Dernier relevé fours
+fc1, fc2, fc3 = st.columns(3)
+for col, i in zip([fc1, fc2, fc3], [1, 2, 3]):
+    v = last[f"furnace_{i}_63kv_mw"]
+    with col:
+        render_kpi_card(
+            f"Four {i} — dernière mesure", f"{v:.2f}", "MW",
+            status="alert" if (i == 2 and v > 62) else "ok",
         )
-        fig1.data[0].name = "Réseau externe"
-        fig1.data[1].name = "Centrale CAT"
-        st.plotly_chart(fig1, use_container_width=True)
-    with c_right:
-        fig2 = placeholder_timeseries(
-            "Tension 15 kV — écart à la consigne (%)",
-            y_label="Écart %",
-            n_series=1,
-            height=250,
-            seed=20,
-        )
-        fig2.data[0].name = "Écart tension"
-        # Reference line at 0
-        fig2.add_hline(y=0, line_dash="dash", line_color="#6B7894", line_width=1)
-        fig2.add_hline(y=-5, line_dash="dot", line_color="#FFB300", line_width=1,
-                       annotation_text="Seuil bas", annotation_position="bottom right")
-        st.plotly_chart(fig2, use_container_width=True)
 
-    # ── Charge transformateurs ────────────────────────────────
-    render_section_title("Charge transformateurs", "🔧")
-    g1, g2, g3, g4 = st.columns(4)
-    gauges = [
-        ("TR-A  63→15 kV",  72,  0, 100, "%"),
-        ("TR-B  15→5,5 kV", 81,  0, 100, "%"),
-        ("TR-C  15→400 V",  58,  0, 100, "%"),
-        ("TR-D  15→400 V",  64,  0, 100, "%"),
-    ]
-    for col, (title, val, mn, mx, unit) in zip([g1, g2, g3, g4], gauges):
-        with col:
-            st.plotly_chart(
-                placeholder_gauge(title, val, mn, mx, unit, height=200),
-                use_container_width=True,
-            )
+# ── Bilan bus 63 kV ───────────────────────────────────────────────────────────
+render_section_title("Bilan bus 63 kV — CAT vs Réseau", "⚖️")
 
-    # ── Hiérarchie réseau ──────────────────────────────────────
-    render_section_title("Hiérarchie du réseau électrique", "🔌")
-    st.markdown("""
-| Niveau | Rôle | Alimente |
-|--------|------|----------|
-| **63 kV** — Poste source | Réception réseau externe + CAT | Fours (direct) · Poste 15 kV |
-| **15 kV** — Force motrice | Distribution inter-sous-stations | Sous-stations |
-| **5,5 kV** | Gros moteurs | Compresseurs · Pompes eau salée · Pompes MPC |
-| **400 V** | Auxiliaires | Moteurs secondaires · Éclairage · Contrôle |
-""")
+col_a, col_b = st.columns(2)
+with col_a:
+    fig_bus = make_timeseries(
+        df,
+        series=[
+            {"col": "total_63kv_bus_mw",       "name": "Demande totale (MW)",  "color": "#DDE3F0"},
+            {"col": "cat_generation_63kv_mw",   "name": "CAT génération (MW)", "color": "#00C853"},
+            {"col": "grid_import_63kv_mw",      "name": "Import réseau (MW)",  "color": "#FFB300"},
+        ],
+        title="Bilan énergétique bus 63 kV",
+        y_label="MW",
+        height=270,
+        shade_anomaly=shade,
+        thresholds=[{"value": 70.0, "name": "Min CAT", "color": "#FF6D00"}],
+    )
+    st.plotly_chart(fig_bus, use_container_width=True)
 
-    badge_ok  = render_status_badge("ok",      "NOMINAL")
-    badge_war = render_status_badge("warning", "ATTENTION")
-    st.markdown(f"63 kV : {badge_ok}  &nbsp;&nbsp;  15 kV : {badge_war}  &nbsp;&nbsp;  5,5 kV : {badge_ok}  &nbsp;&nbsp;  400 V : {badge_ok}", unsafe_allow_html=True)
+with col_b:
+    fig_15kv = make_timeseries(
+        df,
+        series=[
+            {"col": "station_15kv_supply_mw",   "name": "Poste 15 kV total (MW)", "color": "#00B0FF"},
+            {"col": "substation_a_15kv_mw",     "name": "Sous-station A (MW)",    "color": "#7B61FF"},
+            {"col": "substation_b_15kv_mw",     "name": "Sous-station B (MW)",    "color": "#E040FB"},
+            {"col": "substation_c_15kv_mw",     "name": "Sous-station C (MW)",    "color": "#FFB300"},
+        ],
+        title="Réseau 15 kV — sous-stations",
+        y_label="MW",
+        height=270,
+        shade_anomaly=shade,
+        thresholds=[{"value": 26.5, "name": "Seuil surcharge", "color": "#FF6D00"}],
+    )
+    st.plotly_chart(fig_15kv, use_container_width=True)
 
+# ── Coût énergie ──────────────────────────────────────────────────────────────
+render_section_title("Coût énergie", "💰")
+fig_cost = make_timeseries(
+    df,
+    series=[{"col": "energy_cost_xpf", "name": "Coût par période 15 min (XPF)", "color": "#FFB300"}],
+    title="Coût énergie électrique — XPF par quart d'heure",
+    y_label="XPF",
+    height=220,
+    shade_anomaly=shade,
+)
+st.plotly_chart(fig_cost, use_container_width=True)
 
-render()
+# ── Bloc IA ───────────────────────────────────────────────────────────────────
+render_ia_block(anomalies, recs, biz, domain_filter="electricity")

@@ -1,139 +1,209 @@
-"""Page 3 — Supervision Air Comprimé : réseaux 7 bars (instrumentation) et 3 bars (transport)."""
+"""Page 3 — Supervision Air Comprimé : réseaux 7 bars et 3 bars."""
 
-import pandas as pd
 import streamlit as st
-
-st.set_page_config(
-    page_title="Air Comprimé | AI Energy CR",
-    page_icon="💨",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 from modules.ui_components import (
-    inject_custom_css,
-    render_sidebar,
-    render_header,
-    render_kpi_card,
-    render_status_badge,
-    render_section_title,
-    render_info_banner,
-    placeholder_timeseries,
-    placeholder_gauge,
+    PAGE_CONFIG, inject_custom_css, render_scenario_sidebar,
+    render_header, render_kpi_card, render_section_title,
+    make_timeseries, render_ia_block, render_scada_vs_ia, fmt_xpf,
+)
+from modules.state_manager import ensure_state
+
+st.set_page_config(**PAGE_CONFIG)
+inject_custom_css()
+ensure_state()
+render_scenario_sidebar()
+
+ss        = st.session_state
+df        = ss["df_current"]
+anomalies = ss.get("anomalies", [])
+recs      = ss.get("recommendations", [])
+biz       = ss.get("business_summary", {})
+
+shade = "air"  # zone d'anomalie n'apparaît que pour anomalies air comprimé
+last  = df.iloc[-1]
+
+render_header("Supervision Air Comprimé", "Réseau 7 bars (instrumentation) & 3 bars (transport)", "💨")
+
+# ═══════════════════════════════════════════════════════════════
+# AIR 7 BARS
+# ═══════════════════════════════════════════════════════════════
+render_section_title("Réseau air 7 bars — Instrumentation process", "⚙️")
+
+# KPIs 7 bars
+c1, c2, c3, c4 = st.columns(4)
+p7 = last["air_7b_pressure"]
+with c1:
+    render_kpi_card("Pression 7 bars", f"{p7:.3f}", "bar",
+                    status="alert" if p7 < 6.55 else ("warning" if p7 < 6.70 else "ok"))
+with c2:
+    render_kpi_card("Débit total 7b", f"{last['air_7b_total_flow_nm3h']:.0f}", "Nm³/h", status="normal")
+with c3:
+    render_kpi_card("Puissance totale 7b", f"{last['air_7b_total_power_kw']:.1f}", "kW", status="normal")
+with c4:
+    se = last["air_7b_specific_energy_kwh_per_nm3"]
+    render_kpi_card("Énergie spécifique", f"{se:.4f}", "kWh/Nm³",
+                    status="warning" if se > 0.131 else "ok")
+
+# Courbes réseau 7 bars
+col_a, col_b = st.columns(2)
+with col_a:
+    fig_p7 = make_timeseries(
+        df,
+        series=[{"col": "air_7b_pressure", "name": "Pression (bar)", "color": "#7B61FF"}],
+        title="Pression réseau 7 bars",
+        y_label="bar",
+        height=240,
+        shade_anomaly=shade,
+        thresholds=[
+            {"value": 6.55, "name": "Seuil alarme",    "color": "#FF6D00"},
+            {"value": 6.65, "name": "Min nominal",      "color": "#FFB300"},
+        ],
+    )
+    st.plotly_chart(fig_p7, use_container_width=True)
+
+with col_b:
+    fig_flow7 = make_timeseries(
+        df,
+        series=[
+            {"col": "air_7b_total_flow_nm3h",  "name": "Débit total (Nm³/h)",    "color": "#00B0FF"},
+            {"col": "air_7b_total_power_kw",   "name": "Puissance totale (kW)", "color": "#FFB300"},
+        ],
+        title="Débit et puissance 7 bars",
+        y_label="Nm³/h / kW",
+        height=240,
+        shade_anomaly=shade,
+    )
+    st.plotly_chart(fig_flow7, use_container_width=True)
+
+# Débit par compresseur 7 bars
+render_section_title("Compresseurs 7 bars — C713 à C717", "🔧")
+
+fig_c7_flows = make_timeseries(
+    df,
+    series=[
+        {"col": "C713_flow_nm3h", "name": "C713 (Nm³/h)", "color": "#00B0FF"},
+        {"col": "C714_flow_nm3h", "name": "C714 (Nm³/h)", "color": "#00C853"},
+        {"col": "C715_flow_nm3h", "name": "C715 (Nm³/h)", "color": "#FFB300"},
+        {"col": "C716_flow_nm3h", "name": "C716 (Nm³/h)", "color": "#FF6D00"},
+        {"col": "C717_flow_nm3h", "name": "C717 (Nm³/h)", "color": "#7B61FF"},
+    ],
+    title="Débit par compresseur 7 bars",
+    y_label="Nm³/h",
+    height=270,
+    shade_anomaly=shade,
+)
+st.plotly_chart(fig_c7_flows, use_container_width=True)
+
+# Tableau état compresseurs 7 bars
+c7_names = ["C713", "C714", "C715", "C716", "C717"]
+row_cols = st.columns(5)
+for col, name in zip(row_cols, c7_names):
+    status_val = int(last.get(f"{name}_status", 0))
+    flow_val   = float(last.get(f"{name}_flow_nm3h", 0.0))
+    power_val  = float(last.get(f"{name}_power_kw", 0.0))
+    run_css    = "ok" if status_val else "normal"
+    with col:
+        render_kpi_card(
+            name,
+            f"{flow_val:.0f}",
+            "Nm³/h",
+            delta=f"{power_val:.0f} kW",
+            status=run_css,
+        )
+
+# ═══════════════════════════════════════════════════════════════
+# AIR 3 BARS
+# ═══════════════════════════════════════════════════════════════
+render_section_title("Réseau air 3 bars — Transport charbon & poussières", "⚙️")
+
+# KPIs 3 bars
+d1, d2, d3, d4 = st.columns(4)
+p3 = last["air_3b_pressure"]
+with d1:
+    render_kpi_card("Pression 3 bars", f"{p3:.3f}", "bar",
+                    status="alert" if p3 < 2.62 else ("warning" if p3 < 2.75 else "ok"))
+with d2:
+    render_kpi_card("Débit total 3b", f"{last['air_3b_total_flow_nm3h']:.0f}", "Nm³/h", status="normal")
+with d3:
+    render_kpi_card("Puissance totale 3b", f"{last['air_3b_total_power_kw']:.1f}", "kW", status="normal")
+with d4:
+    c311 = int(last.get("C311_status", 0))
+    c312 = int(last.get("C312_status", 0))
+    n_fixed_on = c311 + c312
+    render_kpi_card(
+        "Fixes démarrés (C311/C312)", str(n_fixed_on), "",
+        status="warning" if n_fixed_on > 0 else "ok",
+        delta="Régulation anormale" if n_fixed_on else None,
+    )
+
+# Courbes 3 bars
+col_c, col_d = st.columns(2)
+with col_c:
+    fig_p3 = make_timeseries(
+        df,
+        series=[{"col": "air_3b_pressure", "name": "Pression 3 bars (bar)", "color": "#E040FB"}],
+        title="Pression réseau 3 bars",
+        y_label="bar",
+        height=240,
+        shade_anomaly=shade,
+        thresholds=[
+            {"value": 2.62, "name": "Seuil alarme",  "color": "#FF6D00"},
+            {"value": 2.75, "name": "Min nominal",    "color": "#FFB300"},
+        ],
+    )
+    st.plotly_chart(fig_p3, use_container_width=True)
+
+with col_d:
+    fig_vsd = make_timeseries(
+        df,
+        series=[
+            {"col": "C321_speed_pct", "name": "C321 vitesse (%)", "color": "#00B0FF"},
+            {"col": "C322_speed_pct", "name": "C322 vitesse (%)", "color": "#00C853"},
+            {"col": "C323_speed_pct", "name": "C323 vitesse (%)", "color": "#7B61FF"},
+        ],
+        title="Vitesse VSD C321 / C322 / C323",
+        y_label="%",
+        height=240,
+        shade_anomaly=shade,
+        thresholds=[{"value": 97.0, "name": "Saturation VSD", "color": "#FF6D00"}],
+    )
+    st.plotly_chart(fig_vsd, use_container_width=True)
+
+# Indices transport
+fig_transport = make_timeseries(
+    df,
+    series=[
+        {"col": "dust_transport_index", "name": "Transport poussières",  "color": "#FFB300"},
+        {"col": "coal_transport_index", "name": "Transport charbon",     "color": "#FF6D00"},
+    ],
+    title="Indices demande transport (moteurs principaux de la demande 3 bars)",
+    y_label="index [0-1]",
+    height=220,
+    shade_anomaly=shade,
+)
+st.plotly_chart(fig_transport, use_container_width=True)
+
+# ── SCADA vs IA — exemple fuite air ──────────────────────────────────────────
+render_section_title("Comparaison SCADA vs IA — détection fuite", "🆚")
+render_scada_vs_ia(
+    scada_points=[
+        "Alarme : pression < 6.55 bar",
+        "Opérateur constate la basse pression",
+        "Recherche de cause manuelle",
+        "Pas de corrélation avec le débit",
+    ],
+    ia_points=[
+        "Détecte : pression basse ET débit en hausse ET puissance en hausse",
+        "Signature combinée = fuite réseau probable",
+        "Confiance calculée sur amplitude et durée",
+        "Recommande : inspection circuit, purge vannes",
+        "Chiffre l'économie si correction",
+    ],
+    key_phrase=(
+        "Un SCADA alerterait à pression basse. L'IA détecte que la pression baisse "
+        "pendant que le débit et la puissance augmentent : signature d'une fuite."
+    ),
 )
 
-inject_custom_css()
-render_sidebar()
-
-# ─────────────────────────────────────────────────────────────
-# Placeholder data
-# ─────────────────────────────────────────────────────────────
-
-_C7_STATUS = pd.DataFrame({
-    "Compresseur": ["C713", "C714", "C715", "C716", "C717"],
-    "État":        ["✅ En service", "✅ En service", "⚠️ Dégradé", "🔴 Arrêté", "✅ En service"],
-    "Débit (Nm³/h)": [1_200, 980, 720, 0, 1_100],
-    "Pression sortie (bar)": [7.1, 7.0, 6.6, "—", 7.0],
-    "Conso. élec. (kW)": [132, 108, 95, 0, 122],
-    "Alimentation": ["5,5 kV", "5,5 kV", "5,5 kV", "5,5 kV", "5,5 kV"],
-})
-
-_C3_STATUS = pd.DataFrame({
-    "Compresseur":  ["C321 (var.)", "C322 (var.)", "C323 (var.)", "C311 (fixe)", "C312 (fixe)"],
-    "État":         ["✅ En service", "✅ En service", "🔵 Standby", "⚠️ Actif intempestif", "🔵 Standby"],
-    "Débit (Nm³/h)": [650, 480, 0, 320, 0],
-    "Type":         ["Variable", "Variable", "Variable", "Fixe", "Fixe"],
-})
-
-
-# ─────────────────────────────────────────────────────────────
-# Page
-# ─────────────────────────────────────────────────────────────
-
-def render() -> None:
-    render_header(
-        title="Supervision Air Comprimé",
-        subtitle="Réseau 7 bars (instrumentation + barrage) · Réseau 3 bars (transport poussières / charbon)",
-        icon="💨",
-    )
-    render_info_banner(
-        "Règle 3 bars : les compresseurs <strong>variables (C321–C323)</strong> absorbent la demande ; "
-        "les <strong>fixes (C311–C312)</strong> n'interviennent qu'en complément si insuffisant."
-    )
-
-    # ── KPIs ──────────────────────────────────────────────────
-    render_section_title("Indicateurs clés", "📊")
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        render_kpi_card("Pression réseau 7 bars",   "6.4",  "bar",     delta="-0.6",    status="alert")
-    with k2:
-        render_kpi_card("Compresseurs actifs 7 bars", "3/5", "",        status="warning")
-    with k3:
-        render_kpi_card("Pression réseau 3 bars",   "2.85", "bar",     status="normal")
-    with k4:
-        render_kpi_card("Fixe 3 bars actif",        "C311", "↑ ANORMAL", status="warning")
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ── Courbes pression ──────────────────────────────────────
-    render_section_title("Tendances pression 24 h", "📈")
-    p1, p2 = st.columns(2)
-    with p1:
-        fig7 = placeholder_timeseries(
-            "Pression réseau 7 bars (bar)",
-            y_label="bar",
-            n_series=1,
-            height=250,
-            seed=30,
-        )
-        fig7.add_hline(y=6.5, line_dash="dot", line_color="#FFB300", line_width=1.5,
-                       annotation_text="Seuil bas 6.5 bar", annotation_position="bottom right",
-                       annotation_font_color="#FFB300")
-        fig7.add_hline(y=6.0, line_dash="dot", line_color="#D50000", line_width=1.5,
-                       annotation_text="Critique 6.0 bar", annotation_position="bottom right",
-                       annotation_font_color="#D50000")
-        fig7.update_yaxes(range=[5.5, 8.0])
-        fig7.data[0].name = "Pression 7 bars"
-        st.plotly_chart(fig7, use_container_width=True)
-    with p2:
-        fig3 = placeholder_timeseries(
-            "Pression réseau 3 bars (bar)",
-            y_label="bar",
-            n_series=1,
-            height=250,
-            seed=31,
-        )
-        fig3.add_hline(y=2.7, line_dash="dot", line_color="#FFB300", line_width=1.5,
-                       annotation_text="Seuil bas 2.7 bar", annotation_position="bottom right",
-                       annotation_font_color="#FFB300")
-        fig3.update_yaxes(range=[2.0, 3.5])
-        fig3.data[0].name = "Pression 3 bars"
-        st.plotly_chart(fig3, use_container_width=True)
-
-    # ── État compresseurs 7 bars ──────────────────────────────
-    render_section_title("Compresseurs 7 bars — C713 à C717", "🔧")
-    st.dataframe(_C7_STATUS, use_container_width=True, hide_index=True)
-
-    # ── Jauges débit ─────────────────────────────────────────
-    render_section_title("Débit par compresseur 7 bars (Nm³/h)", "💨")
-    g_cols = st.columns(5)
-    _debits = [1_200, 980, 720, 0, 1_100]
-    _names  = ["C713", "C714", "C715", "C716", "C717"]
-    for col, name, debit in zip(g_cols, _names, _debits):
-        with col:
-            st.plotly_chart(
-                placeholder_gauge(name, debit, 0, 1_400, "Nm³/h", height=190, warn_threshold=1_200),
-                use_container_width=True,
-            )
-
-    # ── État compresseurs 3 bars ──────────────────────────────
-    render_section_title("Compresseurs 3 bars — C311–C312 (fixes) / C321–C323 (variables)", "⚠️")
-    st.dataframe(_C3_STATUS, use_container_width=True, hide_index=True)
-    st.warning(
-        "**Anomalie détectée** : C311 (fixe) actif alors que les variables C321 + C322 "
-        "couvrent 100 % de la demande → consommation inutile estimée à **+320 Nm³/h**.",
-        icon="⚠️",
-    )
-
-
-render()
+# ── Bloc IA ───────────────────────────────────────────────────────────────────
+render_ia_block(anomalies, recs, biz, domain_filter="air")

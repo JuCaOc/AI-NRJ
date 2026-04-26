@@ -137,10 +137,45 @@ pytest tests/ -v --cov=modules
 
 ---
 
-## Philosophie IA
+## SCADA vs IA
 
-L'IA est **explicable**, **industrielle** et **prudente**.  
+| SCADA / Historian | IA Control Room |
+|---|---|
+| Affiche des courbes et tags temps réel | Corrèle les signaux entre domaines |
+| Alarme sur seuil fixe et isolé | Détecte des dérives multi-systèmes |
+| L'opérateur interprète seul | Diagnostic explicable et causes probables |
+| Pas d'estimation économique | Impact chiffré en XPF (énergie, maintenance, arrêt) |
+| Pas d'aide à la décision | Recommandations priorisées + simulation avant action |
+
+> Le SCADA montre **ce qui se passe**. L'IA explique **pourquoi** et **quoi faire**.
+
+---
+
+## Scénarios simulés
+
+13 scénarios industriels reproductibles : `pic_four_2`, `perte_partielle_cat`,
+`surcharge_15kv`, `fuite_air_7b`, `defaut_c715`, `desequilibre_c7`,
+`saturation_vsd_3b`, `mauvaise_regulation_3b`, `defaut_refroidissement`,
+`risque_legionelle`, `baisse_bassin_b1`, `forte_dependance_eau_brute`,
+`multi_crise`. Sélection via la sidebar Streamlit.
+
+---
+
+## Limites du prototype
+
+- **Démonstration uniquement** — données mockées, aucun lien SCADA réel.
+- **Aucune commande terrain** — les simulations modifient un DataFrame en mémoire.
+- **Détection rule-based** — pas de modèle ML entraîné en production.
+- **Chatbot local** — règles + classification d'intentions, pas d'appel API externe.
+
+---
+
+## Sécurité & philosophie IA
+
+L'IA est **explicable**, **industrielle** et **prudente**.
 Elle ne pilote jamais directement — toute action passe par validation humaine.
+Tous les écrans simulation portent la mention :
+*« Simulation uniquement — aucune commande industrielle réelle. »*
 
 ---
 
